@@ -3,7 +3,7 @@
 一些偏实用的 shell 脚本，当前包含：
 
 - `codex-zsh-history-isolation.sh`：隔离 Codex 执行命令带来的 shell 历史污染，并控制 Codex 自己的 `history.jsonl`
-- `zsh-history-prune.sh`：按常用命令和最近历史筛选 `~/.zsh_history`
+- `zsh-history-prune.sh`：按完整命令行出现次数和最近历史筛选 `~/.zsh_history`
 
 目标仓库：
 [https://github.com/huluhuluu/useful-sh](https://github.com/huluhuluu/useful-sh)
@@ -118,6 +118,12 @@ chmod +x codex-zsh-history-isolation.sh
 ./zsh-history-prune.sh --apply
 ```
 
+等价于：
+
+```bash
+./zsh-history-prune.sh --min-count 5 --top 0 --keep-recent 500 --apply
+```
+
 默认规则是：
 
 - 完整命令行出现次数至少 `5`
@@ -128,6 +134,12 @@ chmod +x codex-zsh-history-isolation.sh
 
 ```bash
 ./zsh-history-prune.sh --min-count 8 --top 20 --keep-recent 1000
+```
+
+如果你只想按“完整命令行至少出现 5 次”来保留，可以直接用：
+
+```bash
+./zsh-history-prune.sh --min-count 5 --top 0
 ```
 
 ### 只 sparse clone 这个脚本并执行
