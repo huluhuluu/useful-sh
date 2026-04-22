@@ -1,9 +1,9 @@
 # zsh-history-prune.sh
 
-按完整命令行出现次数和最近历史筛选 `~/.zsh_history`。
+按完整命令行出现次数和最近历史筛选 `~/.zsh_history`并清理。
 
 脚本位置：
-[zsh-history-prune.sh](/workspace/zjh/code/shield/sh/zsh-history-prune/zsh-history-prune.sh)
+[zsh-history-prune.sh](./zsh-history-prune.sh)
 
 常用命令：
 
