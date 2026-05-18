@@ -4,29 +4,50 @@
 
 ## 1. 🧭 场景
 
-这类问题的典型现象是：
+现象: `win11`的`设置`-> `时间和语言`-> `日期和时间` -> `其他设置` -> `更改时间服务器`失败。
 
+![Windows 设置中更改时间服务器失败](./png/windows-time-server-sync-error.png)
+
+执行下面命令时间同步服务查询命令，显示
 ```powershell
-w32tm /query /status
-```
-
-输出里长期显示：
-
-```text
+➜ w32tm /query /status
 Leap 指示符: 3(未同步)
-源: Local CMOS Clock
+层次: 0 (未指定)
+精度: -23 (每刻度 119.209ns)
+根延迟: 0.0000000s
+根分散: 0.0000000s
+引用 ID: 0x00000000 (未指定)
 上次成功同步时间: 未指定
+源: Local CMOS Clock
+轮询间隔: 10 (1024s)
 ```
 
 但直接测试 NTP 服务器又是通的：
 
 ```powershell
-w32tm /stripchart /computer:ntp1.aliyun.com /samples:3 /dataonly
+➜ w32tm /stripchart /computer:ntp1.aliyun.com /samples:3 /dataonly
+正在跟踪 ntp1.aliyun.com [121.199.69.55:123]。
+正在收集 3 示例。
+当前时间是 2026/5/18 12:35:27。
+12:35:27, +00.0604534s
+12:35:29, +00.0600663s
+12:35:31, +00.0609863s
 ```
 
-这个脚本不依赖 `w32time` 服务。它会用临时 UDP 端口请求 NTP，解析返回的 NTP timestamp，然后调用 Windows API `SetSystemTime` 设置系统时间。
+排查过程里已经确认：
+
+| 检查项 | 结果 |
+| --- | --- |
+| `w32tm /stripchart` | 可以从 `ntp1.aliyun.com` 拿到 NTP 样本 |
+| `w32time` 服务 | 一直停在 `Local CMOS Clock` |
+| Clash 普通系统代理 | 关闭后无变化 |
+| Tailscale 服务和网卡 | 停止后无变化 |
+| DNS | 使用域名和直连 IP 都不能让 `w32time` 同步 |
+| Windows Time debug | 出现 `NTP sample vector is empty` |
 
 ## 2. 🔧 参数说明
+
+当前脚本不依赖 `w32time` 服务。它会用临时 UDP 端口请求 NTP，解析返回的 NTP timestamp，然后调用 Windows API `SetSystemTime` 设置系统时间。
 
 | 参数 | 说明 | 默认值 |
 | --- | --- | --- |
@@ -37,7 +58,7 @@ w32tm /stripchart /computer:ntp1.aliyun.com /samples:3 /dataonly
 | `-InstallTask` | 安装计划任务，开机后运行一次，并每 30 分钟运行一次 | 关闭 |
 | `-UninstallTask` | 删除计划任务 | 关闭 |
 | `-IntervalMinutes N` | 计划任务运行间隔 | `30` |
-| `-Help` | 显示帮助信息并退出 | - |
+| `-h, --help` | 显示帮助信息并退出 | - |
 
 ## 3. 🚀 常用命令
 
@@ -45,7 +66,7 @@ w32tm /stripchart /computer:ntp1.aliyun.com /samples:3 /dataonly
 
 ```powershell
 # 查看帮助
-.\sh\windows-sntp-sync\windows-sntp-sync.ps1 -Help
+.\sh\windows-sntp-sync\windows-sntp-sync.ps1 --help
 
 # 执行一次同步
 .\sh\windows-sntp-sync\windows-sntp-sync.ps1
@@ -93,53 +114,3 @@ w32tm /stripchart /computer:ntp1.aliyun.com /samples:5 /dataonly
 - `-MaxCorrectionSeconds` 默认是 `300`，用于避免 DNS 污染、错误服务器或解析 bug 导致系统时间被大幅改错。
 - 计划任务使用 `SYSTEM` 账户运行，不依赖当前用户登录后的 UAC。
 - 脚本优先使用 IPv4 地址，避免部分网络环境下 IPv6 NTP 超时影响结果。
-
-## 6. 🧩 问题记录和 issue 方向
-
-这次遇到的问题不是普通的 NTP 服务器不可达。排查过程里已经确认：
-
-| 检查项 | 结果 |
-| --- | --- |
-| `w32tm /stripchart` | 可以从 `ntp1.aliyun.com` 拿到 NTP 样本 |
-| `w32time` 服务 | 一直停在 `Local CMOS Clock` |
-| Clash 普通系统代理 | 关闭后无变化 |
-| Tailscale 服务和网卡 | 停止后无变化 |
-| DNS | 使用域名和直连 IP 都不能让 `w32time` 同步 |
-| Windows Time debug | 出现 `NTP sample vector is empty` |
-
-关键分叉是：
-
-```text
-w32tm /stripchart       能拿到样本
-w32time 服务同步        没有可用时间数据
-```
-
-这说明问题更接近 Windows Time Service 自身的 NTP provider、WFP/网络栈、网卡驱动或 Windows 版本兼容问题。
-
-优先提交到 Microsoft：
-
-```text
-Feedback Hub -> Report a problem -> Desktop Environment / Settings / Date and Time
-```
-
-也可以在 Microsoft Q&A 补一份记录：
-
-```text
-https://learn.microsoft.com/answers/tags/60/windows
-```
-
-issue 里建议附上：
-
-```powershell
-w32tm /query /status
-w32tm /query /peers
-w32tm /stripchart /computer:ntp1.aliyun.com /samples:3 /dataonly
-```
-
-同时附上 Windows Time debug 里的关键日志：
-
-```text
-Sending packet to <ntp-ip>:123
-NTP sample vector is empty
-No new NTP sample is available
-```

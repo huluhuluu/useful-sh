@@ -9,6 +9,7 @@ param(
     [int] $IntervalMinutes = 30,
     [switch] $InstallTask,
     [switch] $UninstallTask,
+    [Alias('h')]
     [switch] $Help
 )
 
@@ -37,9 +38,10 @@ Options:
   -TaskName NAME                   Interval task name
   -StartupTaskName NAME            Startup task name
   -IntervalMinutes N               Interval task period, default: 30
-  -Help                            Show this help
+  -h, --help                       Show this help
 
 Examples:
+  .\windows-sntp-sync.ps1 --help
   .\windows-sntp-sync.ps1
   .\windows-sntp-sync.ps1 -Servers ntp1.aliyun.com,ntp2.aliyun.com
   .\windows-sntp-sync.ps1 -InstallTask
