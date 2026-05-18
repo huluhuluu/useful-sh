@@ -2,7 +2,7 @@
 
 ## 1. 📁 仓库结构
 
-整理一些 `shell` 脚本，统一放在 `sh/<name>/` 目录下，每个目录包含：
+整理一些 `shell` / `PowerShell` 脚本，统一放在 `sh/<name>/` 目录下，每个目录包含：
 
 - 可直接执行的脚本文件
 - 对应的 `README.md`
@@ -15,6 +15,7 @@
 | [`codex-zsh-history-isolation.sh`](./sh/codex-zsh-history-isolation/codex-zsh-history-isolation.sh) | 隔离 Codex 使用时的 `zsh` 历史，并控制 Codex 的 `history.jsonl` 保留模式 | [README](./sh/codex-zsh-history-isolation/README.md) |
 | [`netcat-transfer.sh`](./sh/netcat-transfer/netcat-transfer.sh) | 使用 `netcat` 压缩传输文件或目录，接收端自动解压 | [README](./sh/netcat-transfer/README.md) |
 | [`ubuntu-config.sh`](./sh/ubuntu-config/ubuntu-config.sh) | 批量执行 Ubuntu 常用初始化，包含基础工具和开发工具安装 | [README](./sh/ubuntu-config/README.md) |
+| [`windows-sntp-sync.ps1`](./sh/windows-sntp-sync/windows-sntp-sync.ps1) | 绕过 `w32time`，使用独立 SNTP 请求校准 Windows 系统时间 | [README](./sh/windows-sntp-sync/README.md) |
 | [`zsh-history-prune.sh`](./sh/zsh-history-prune/zsh-history-prune.sh) | 按完整命令行出现次数和最近历史筛选 `~/.zsh_history` | [README](./sh/zsh-history-prune/README.md) |
 
 ## 2. 🚀 使用方式
@@ -27,5 +28,6 @@
 ./sh/codex-zsh-history-isolation/codex-zsh-history-isolation.sh --help
 ./sh/netcat-transfer/netcat-transfer.sh --help
 ./sh/ubuntu-config/ubuntu-config.sh --help
+pwsh -NoProfile -ExecutionPolicy Bypass -File ./sh/windows-sntp-sync/windows-sntp-sync.ps1 -Help
 ./sh/zsh-history-prune/zsh-history-prune.sh --help
 ```
