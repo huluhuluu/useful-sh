@@ -14,17 +14,24 @@ What it does:
 Options:
   --path DIR         Target project directory (default: current directory)
   --ndk-path DIR     Override Android NDK directory instead of auto-detect
+  --compdb-dir DIR   Compilation database directory, relative to the project
+                     or absolute (default: build)
+  --compile-commands-dir DIR
+                     Alias for --compdb-dir
   -h, --help         Show this help
 
 Examples:
   ./android-clangd-setup.sh
   ./android-clangd-setup.sh --path /path/to/project
   ./android-clangd-setup.sh --ndk-path /opt/android-ndk-r29
+  ./android-clangd-setup.sh --compdb-dir out/clangdb
+  ./android-clangd-setup.sh --compdb-dir /tmp/clangdb
 EOF
 }
 
 TARGET_DIR="."
 NDK_ROOT_OVERRIDE=""
+COMPILE_COMMANDS_DIR="build"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -36,6 +43,11 @@ while [ "$#" -gt 0 ]; do
     --ndk-path)
       [ "$#" -ge 2 ] || { echo "missing value for --ndk-path" >&2; exit 1; }
       NDK_ROOT_OVERRIDE=$2
+      shift 2
+      ;;
+    --compdb-dir|--compile-commands-dir)
+      [ "$#" -ge 2 ] || { echo "missing value for $1" >&2; exit 1; }
+      COMPILE_COMMANDS_DIR=$2
       shift 2
       ;;
     -h|--help)
@@ -64,6 +76,11 @@ TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
 
 if [ ! -w "$TARGET_DIR" ]; then
   echo "target directory is not writable: $TARGET_DIR" >&2
+  exit 1
+fi
+
+if [ -z "$COMPILE_COMMANDS_DIR" ]; then
+  echo "compile commands directory must not be empty" >&2
   exit 1
 fi
 
@@ -132,7 +149,18 @@ CLANG_BIN="$PREBUILT_BIN_DIR/clang"
 VSCODE_DIR="$TARGET_DIR/.vscode"
 SETTINGS_FILE="$VSCODE_DIR/settings.json"
 CLANGD_FILE="$TARGET_DIR/.clangd"
-COMPILE_COMMANDS_FILE="$TARGET_DIR/build/compile_commands.json"
+case "$COMPILE_COMMANDS_DIR" in
+  /*)
+    VSCODE_COMPILE_COMMANDS_DIR="$COMPILE_COMMANDS_DIR"
+    CLANGD_COMPILE_COMMANDS_DIR="$COMPILE_COMMANDS_DIR"
+    COMPILE_COMMANDS_FILE="$COMPILE_COMMANDS_DIR/compile_commands.json"
+    ;;
+  *)
+    VSCODE_COMPILE_COMMANDS_DIR="\${workspaceFolder}/$COMPILE_COMMANDS_DIR"
+    CLANGD_COMPILE_COMMANDS_DIR="$COMPILE_COMMANDS_DIR"
+    COMPILE_COMMANDS_FILE="$TARGET_DIR/$COMPILE_COMMANDS_DIR/compile_commands.json"
+    ;;
+esac
 
 [ -x "$CLANGD_PATH" ] || {
   echo "clangd is not executable: $CLANGD_PATH" >&2
@@ -161,7 +189,7 @@ if [ -e "$CLANGD_FILE" ] && [ ! -w "$CLANGD_FILE" ]; then
   exit 1
 fi
 
-python3 - "$SETTINGS_FILE" "$CLANGD_FILE" "$CLANGD_PATH" "$QUERY_DRIVER" <<'PY'
+python3 - "$SETTINGS_FILE" "$CLANGD_FILE" "$CLANGD_PATH" "$QUERY_DRIVER" "$VSCODE_COMPILE_COMMANDS_DIR" "$CLANGD_COMPILE_COMMANDS_DIR" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -170,6 +198,8 @@ settings_path = Path(sys.argv[1])
 clangd_path = Path(sys.argv[2])
 clangd_bin = sys.argv[3]
 query_driver = sys.argv[4]
+vscode_compile_commands_dir = sys.argv[5]
+clangd_compile_commands_dir = sys.argv[6]
 
 
 def strip_jsonc(text: str) -> str:
@@ -228,11 +258,51 @@ def strip_jsonc(text: str) -> str:
     return "".join(result)
 
 
+def strip_trailing_commas(text: str) -> str:
+    result = []
+    index = 0
+    in_string = False
+    escape = False
+
+    while index < len(text):
+        char = text[index]
+
+        if in_string:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(text) and text[lookahead] in "}]":
+                index += 1
+                continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
+
+
 def load_settings(path: Path) -> dict:
     if not path.exists():
         return {}
     raw = path.read_text(encoding="utf-8")
-    stripped = strip_jsonc(raw).strip()
+    stripped = strip_trailing_commas(strip_jsonc(raw)).strip()
     if not stripped:
         return {}
     data = json.loads(stripped)
@@ -279,7 +349,7 @@ settings = load_settings(settings_path)
 settings["clangd.arguments"] = [
     "-j=16",
     "--header-insertion=never",
-    "--compile-commands-dir=${workspaceFolder}/build",
+    f"--compile-commands-dir={vscode_compile_commands_dir}",
     f"--query-driver={query_driver}",
     "--clang-tidy",
 ]
@@ -288,7 +358,7 @@ dump_settings(settings_path, settings)
 
 compile_flags_block = [
     "CompileFlags:",
-    "  CompilationDatabase: build",
+    f"  CompilationDatabase: {clangd_compile_commands_dir}",
 ]
 
 diagnostics_block = [
