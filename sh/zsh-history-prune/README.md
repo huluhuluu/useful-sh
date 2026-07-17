@@ -18,6 +18,8 @@ Ubuntu / Debian 精简系统可安装：
 sudo apt install mawk coreutils
 ```
 
+必需命令缺失时，脚本会在读取或改写历史文件前打印对应的 `apt install` 命令并退出。
+
 ## 1. 🔧 参数说明
 
 | 参数 | 说明 | 默认值 |

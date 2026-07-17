@@ -139,6 +139,7 @@ fi
 
 command -v apt-get >/dev/null 2>&1 || {
   echo "apt-get is required" >&2
+  echo "this script only supports Ubuntu systems with apt-get" >&2
   exit 1
 }
 
@@ -163,6 +164,8 @@ if [ "$(id -u)" -eq 0 ]; then
 else
   command -v sudo >/dev/null 2>&1 || {
     echo "sudo is required when not running as root" >&2
+    echo "install as root: apt-get install sudo" >&2
+    echo "or run this script as root" >&2
     exit 1
   }
   SUDO="sudo"
@@ -275,6 +278,7 @@ download_file() {
   fi
 
   echo "wget or curl is required to download: $url" >&2
+  echo "install on Ubuntu: sudo apt install wget curl" >&2
   exit 1
 }
 

@@ -17,7 +17,10 @@ Ubuntu 24.04 及更新版本可安装：
 sudo apt install python3 zsh
 ```
 
+macOS 可使用 `brew install python zsh` 安装。
+
 较旧发行版的 `python3` 可能低于 3.11，安装后仍应执行上面的检查命令确认。
+缺少 Python 或 `tomllib` 时，脚本也会在退出前打印对应的安装和版本提示。
 
 ## 1. 🔧 参数说明
 

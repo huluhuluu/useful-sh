@@ -86,9 +86,24 @@ SHOW_PROGRESS=1
 PV_AVAILABLE=0
 SOURCE_PATHS=()
 
+print_install_hint() {
+  case "$1" in
+    tar) package="tar" ;;
+    nc) package="netcat-openbsd" ;;
+    find) package="findutils" ;;
+    awk) package="gawk" ;;
+    zstd) package="zstd" ;;
+    gzip) package="gzip" ;;
+    pv) package="pv" ;;
+    *) return ;;
+  esac
+  printf 'install on Ubuntu/Debian: sudo apt install %s\n' "$package" >&2
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "required command not found: $1" >&2
+    print_install_hint "$1"
     exit 1
   }
 }
@@ -455,6 +470,7 @@ if (( SHOW_PROGRESS == 1 )) && [[ "$MODE" != "test" ]]; then
     PV_AVAILABLE=1
   else
     echo "warning: pv is not installed; continuing without progress output" >&2
+    print_install_hint pv
     SHOW_PROGRESS=0
   fi
 fi

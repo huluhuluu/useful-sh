@@ -9,11 +9,42 @@
 
 ## 依赖检查
 
-脚本需要 Bash；可用 `--list` 查看当前机器可用的 hash 算法和对应命令：
+脚本需要 Bash 和 `awk`；可用 `--list` 查看当前机器可用的 hash 算法和对应命令：
 
 ```bash
 command -v bash >/dev/null || echo "missing: bash"
+command -v awk >/dev/null || echo "missing: awk"
 ./sh/file-integrity/file-integrity.sh --list
+```
+
+Ubuntu / Debian 的基础 hash 工具可安装：
+
+```bash
+sudo apt install bash gawk coreutils openssl
+```
+
+`blake3` 和 `xxh64` 是可选的高速算法，需要额外命令。Ubuntu / Debian 可安装：
+
+```bash
+# 安装 xxhsum
+sudo apt install xxhash
+
+# 较新发行版在软件源提供 b3sum 时
+sudo apt install b3sum
+```
+
+Ubuntu 20.04 的默认软件源没有 `b3sum` 包，可使用当前 Rust/Cargo 工具链安装：
+
+```bash
+sudo apt install cargo
+cargo install b3sum --locked
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+macOS 可使用 Homebrew：
+
+```bash
+brew install b3sum xxhash
 ```
 
 ## 1. 🔧 参数说明
@@ -93,6 +124,8 @@ shopt -s globstar nullglob
 | `xxh64` | 只做非安全场景的快速误传检测 | `xxhsum` |
 
 `--algo auto` 会优先使用 `blake3`，没有 `b3sum` 时回退到 `sha256`，再回退到 `md5`。
+
+`xxh64` 内部使用 `xxhsum -H1`，其中 `1` 代表 64 位算法。Ubuntu 20.04 的 `xxhsum 0.7.3` 不支持 `-H64` 写法。
 
 ## 5. ⚠️ 注意
 

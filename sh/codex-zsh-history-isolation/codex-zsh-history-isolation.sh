@@ -74,9 +74,28 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+print_python_install_hint() {
+  echo "install on Ubuntu 24.04+: sudo apt install python3" >&2
+  echo "install on macOS: brew install python" >&2
+  echo "Python 3.11+ with the standard tomllib module is required." >&2
+}
+
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required" >&2
+  echo "required command not found: python3" >&2
+  print_python_install_hint
   exit 1
+fi
+
+if ! python3 -c 'import sys, tomllib; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+  echo "Python 3.11 or newer with tomllib is required" >&2
+  print_python_install_hint
+  exit 1
+fi
+
+if ! command -v zsh >/dev/null 2>&1; then
+  echo "warning: zsh is not installed; the generated shell isolation config cannot take effect yet" >&2
+  echo "install on Ubuntu/Debian: sudo apt install zsh" >&2
+  echo "install on macOS: brew install zsh" >&2
 fi
 
 case "$CODEX_DIR" in

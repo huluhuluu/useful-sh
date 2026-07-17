@@ -12,6 +12,27 @@
 - `Miniforge`
 - 可选的 `CUDA` 环境变量
 
+## 依赖检查
+
+脚本只支持带 `apt-get` 的 Ubuntu；非 root 用户还需要 `sudo`，下载 Miniforge 时需要 `wget` 或 `curl`：
+
+```bash
+command -v apt-get >/dev/null || echo "missing: apt-get"
+if [ "$(id -u)" -ne 0 ]; then
+  command -v sudo >/dev/null || echo "missing: sudo"
+fi
+command -v wget >/dev/null || command -v curl >/dev/null || echo "missing: wget or curl"
+```
+
+精简 Ubuntu 系统可以 root 身份安装：
+
+```bash
+apt-get update
+apt-get install sudo wget curl
+```
+
+缺少 `sudo`、`wget` 或 `curl` 时，脚本会在退出前打印安装命令。`apt-get` 缺失则表示当前系统不在脚本支持范围内。
+
 ## 1. 🔧 参数说明
 
 | 参数 | 说明 | 默认值 |

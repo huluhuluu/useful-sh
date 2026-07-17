@@ -46,11 +46,12 @@ require_file() {
 }
 
 lower() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+  printf '%s' "${1,,}"
 }
 
 strip_hash() {
-  printf '%s' "$1" | awk '{print tolower($1)}'
+  local value=${1%%[[:space:]]*}
+  printf '%s' "${value,,}"
 }
 
 has_command() {
@@ -66,6 +67,7 @@ pick_auto_algo() {
     printf '%s\n' "md5"
   else
     echo "no supported hash command found" >&2
+    print_install_hint core-hash
     exit 1
   fi
 }
@@ -101,6 +103,37 @@ first_command() {
   done
 }
 
+print_install_hint() {
+  case "$1" in
+    b3sum)
+      printf '%s\n' \
+        'install b3sum:' \
+        '  Ubuntu/Debian (package available): sudo apt install b3sum' \
+        '  Ubuntu 20.04 fallback:             sudo apt install cargo && cargo install b3sum --locked' \
+        '  macOS:                             brew install b3sum' \
+        '  Cargo installs to ~/.cargo/bin; ensure that directory is in PATH.' >&2
+      ;;
+    xxhsum)
+      printf '%s\n' \
+        'install xxhsum:' \
+        '  Ubuntu/Debian: sudo apt install xxhash' \
+        '  macOS:         brew install xxhash' >&2
+      ;;
+    awk)
+      printf '%s\n' \
+        'install awk:' \
+        '  Ubuntu/Debian: sudo apt install gawk' \
+        '  macOS:         awk is included with the system' >&2
+      ;;
+    core-hash)
+      printf '%s\n' \
+        'install standard hash commands:' \
+        '  Ubuntu/Debian: sudo apt install coreutils openssl' \
+        '  macOS:         md5 and shasum are included with the system' >&2
+      ;;
+  esac
+}
+
 hash_file() {
   algo=$1
   path=$2
@@ -118,6 +151,7 @@ hash_file() {
         openssl dgst -md5 -r "$path" | awk '{print tolower($1)}'
       else
         echo "md5 requires one of: md5sum, md5, openssl" >&2
+        print_install_hint core-hash
         exit 1
       fi
       ;;
@@ -130,6 +164,7 @@ hash_file() {
         openssl dgst -sha1 -r "$path" | awk '{print tolower($1)}'
       else
         echo "sha1 requires one of: sha1sum, shasum, openssl" >&2
+        print_install_hint core-hash
         exit 1
       fi
       ;;
@@ -142,6 +177,7 @@ hash_file() {
         openssl dgst -sha256 -r "$path" | awk '{print tolower($1)}'
       else
         echo "sha256 requires one of: sha256sum, shasum, openssl" >&2
+        print_install_hint core-hash
         exit 1
       fi
       ;;
@@ -154,6 +190,7 @@ hash_file() {
         openssl dgst -sha512 -r "$path" | awk '{print tolower($1)}'
       else
         echo "sha512 requires one of: sha512sum, shasum, openssl" >&2
+        print_install_hint core-hash
         exit 1
       fi
       ;;
@@ -162,14 +199,16 @@ hash_file() {
         b3sum "$path" | awk '{print tolower($1)}'
       else
         echo "blake3 requires: b3sum" >&2
+        print_install_hint b3sum
         exit 1
       fi
       ;;
     xxh64)
       if has_command xxhsum; then
-        xxhsum -H64 "$path" | awk '{print tolower($1)}'
+        xxhsum -H1 "$path" | awk '{print tolower($1)}'
       else
         echo "xxh64 requires: xxhsum" >&2
+        print_install_hint xxhsum
         exit 1
       fi
       ;;
@@ -217,6 +256,12 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if ! has_command awk; then
+  echo "required command not found: awk" >&2
+  print_install_hint awk
+  exit 1
+fi
 
 if (( ${#FILE_PATHS[@]} == 0 )); then
   echo "missing file path" >&2

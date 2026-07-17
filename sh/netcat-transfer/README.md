@@ -40,6 +40,8 @@ Ubuntu / Debian 可安装：
 sudo apt install netcat-openbsd pv zstd gzip tar findutils gawk
 ```
 
+必需命令缺失时，脚本会在退出前打印对应的 `apt install` 命令。缺少可选的 `pv` 时会打印安装命令，然后在不显示进度的情况下继续传输。
+
 ## 2. 🔧 参数说明
 
 ### 通用参数

@@ -2,6 +2,25 @@
 
 使用脚本 [codex-skills-bootstrap.sh](./codex-skills-bootstrap.sh)，通过 `cc-switch` 给 `Codex` 批量安装并启用常用 skills。默认目标是 `codex`，也可以切换到其它 agent。🧩
 
+## 依赖检查
+
+Linux / Git Bash 入口需要 `npx`，自动安装 `cc-switch` 时还需要 `curl` 和 `bash`：
+
+```bash
+for cmd in bash curl npx; do
+  command -v "$cmd" >/dev/null || echo "missing: $cmd"
+done
+command -v cc-switch >/dev/null || echo "cc-switch will be installed automatically"
+```
+
+Ubuntu / Debian 可安装基础依赖：
+
+```bash
+sudo apt install bash curl npm
+```
+
+macOS 上的 Node.js / `npx` 可使用 `brew install node`安装，但当前 `.sh` 中的 `cc-switch` 自动安装器不支持 macOS。缺少依赖时，脚本会在退出前打印对应安装命令或 `cc-switch` 自动安装提示。
+
 ## 1. 🔧 参数说明
 
 | 参数 | 说明 | 默认值 |

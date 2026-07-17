@@ -19,7 +19,9 @@ Ubuntu / Debian 可安装这些基础依赖：
 sudo apt install python3 findutils coreutils
 ```
 
-还必须提前准备好 Android NDK，且 NDK 中应存在可执行的 `toolchains/llvm/prebuilt/*/bin/clang` 和 `clangd`。可通过环境变量让脚本探测，或使用 `--ndk-path DIR` 指定；本文档不提供 Android NDK 安装步骤。
+macOS 的 Python 可使用 `brew install python` 安装。
+
+基础命令缺失或 Python 版本过低时，脚本会在退出前打印安装提示。还必须提前准备好 Android NDK，且 NDK 中应存在可执行的 `toolchains/llvm/prebuilt/*/bin/clang` 和 `clangd`。可通过环境变量让脚本探测，或使用 `--ndk-path DIR` 指定；本文档不提供 Android NDK 安装步骤。
 
 ## 1. 🔧 参数说明
 

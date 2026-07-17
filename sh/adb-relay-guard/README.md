@@ -6,22 +6,15 @@
 
 ## 依赖检查
 
-`adb` 是必需依赖；默认启用 SSH 反向转发时还需要 `ssh`：
+当前脚本依赖`adb, ssh, ss, lsof, socat`等包。Ubuntu / Debian 可安装：
 
 ```bash
-for cmd in adb awk sort uniq grep mktemp; do
-  command -v "$cmd" >/dev/null || echo "missing: $cmd"
-done
-command -v ssh >/dev/null || echo "required unless using --no-ssh: ssh"
+sudo apt install adb openssh-client gawk coreutils grep iproute2 lsof socat
 ```
 
-`ss` 和 `lsof` 用于诊断端口占用，文末的本地端口转发示例另外需要 `socat`。Ubuntu / Debian 可安装：
+必需命令缺失时，脚本会在退出前打印对应的 `apt install` 命令。
 
-```bash
-sudo apt install adb openssh-client iproute2 lsof socat
-```
-
-默认端口如下：
+默认会转发两个端口到服务器上：
 
 | 端口 | 说明 |
 | --- | --- |
@@ -82,7 +75,7 @@ adb forward --list
   --relay-port 45059
 ```
 
-放到 `tmux` 里运行：
+建议放到终端复用器如 `tmux` 里运行：
 
 ```bash
 tmux new -s adb-relay './adb-relay-guard.sh --ssh-host <ssh-host>'
@@ -154,6 +147,7 @@ ssh -NT \
 - 远端 SSH 主机需要允许远端监听 `0.0.0.0`，通常要确认 SSH server 的 `GatewayPorts` 配置，如果没有设置端口会转发到目标机器的`127.0.0.1`上，开以通过开发防火墙规则+socat转发，来吧目标机器的`localhost`端口映射到局域网IP上，例如
 ```bash
 # 添加防火墙规则
+# 这里的eno2是目标机器的局域网网卡名，可以通过ip addr查看，
 sudo ufw allow in on eno2 from 192.168.124.0/24 to any port 47954 proto tcp
 sudo ufw allow in on eno2 from 192.168.124.0/24 to any port 47964 proto tcp
 sudo ufw allow in on eno2 from 192.168.124.0/24 to any port 45058 proto tcp
@@ -162,7 +156,7 @@ sudo ufw allow in on eno2 from 192.168.124.0/24 to any port 45158 proto tcp
 # 转发端口
 #!/usr/bin/env bash
 set -euo pipefail
-
+# 这里ip和端口根据实际情况使用
 BIND_IP="192.168.124.101"
 PORTS=(47954 47964 45058 45158)
 LOG_DIR="/tmp"
@@ -186,4 +180,4 @@ ss -ltnp | grep -E ':(47954|47964|45058|45158)\b' || true
 # 杀掉转发进程
 pkill -f 'socat.*TCP-LISTEN:\(47954\|47964\|45058\|45158\)'
 ```
-- 配置文件里的顶层块名只是人类可读标签，真正用于选择手机的是 `serial`
+- 配置文件里的顶层块名只是人类可读标签，真正用于选择手机的是 `serial`串号

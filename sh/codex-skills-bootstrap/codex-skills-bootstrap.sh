@@ -192,11 +192,15 @@ install_cc_switch() {
 
   command -v curl >/dev/null 2>&1 || {
     echo "curl is required to install cc-switch automatically" >&2
+    echo "install on Ubuntu/Debian: sudo apt install curl" >&2
+    echo "install on macOS: brew install curl" >&2
     exit 1
   }
 
   command -v bash >/dev/null 2>&1 || {
     echo "bash is required to run the cc-switch installer" >&2
+    echo "install on Ubuntu/Debian: sudo apt install bash" >&2
+    echo "install on macOS: brew install bash" >&2
     exit 1
   }
 
@@ -221,6 +225,7 @@ ensure_cc_switch() {
 
   if [ "$INSTALL_CC_SWITCH" -eq 0 ]; then
     echo "cc-switch is required but not found" >&2
+    echo "rerun without --no-install-cc-switch to install it automatically" >&2
     exit 1
   fi
 
@@ -245,7 +250,9 @@ ensure_npx() {
   fi
 
   echo "npx is required to install skills from skills.sh sources" >&2
-  echo "install Node.js first, then rerun this script" >&2
+  echo "install on Ubuntu/Debian: sudo apt install npm" >&2
+  echo "install on macOS: brew install node" >&2
+  echo "then verify with: npx --version" >&2
   exit 1
 }
 

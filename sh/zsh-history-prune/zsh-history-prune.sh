@@ -78,6 +78,27 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+print_install_hint() {
+  case "$1" in
+    awk) package="mawk" ;;
+    sort|mktemp|cmp|cp|date) package="coreutils" ;;
+    *) return ;;
+  esac
+  printf 'install on Ubuntu/Debian: sudo apt install %s\n' "$package" >&2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "required command not found: $1" >&2
+    print_install_hint "$1"
+    exit 1
+  }
+}
+
+for command_name in awk sort mktemp cmp cp date; do
+  require_command "$command_name"
+done
+
 is_non_negative_int() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;

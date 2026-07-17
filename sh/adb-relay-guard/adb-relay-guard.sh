@@ -295,12 +295,29 @@ validate_records() {
   fi
 }
 
+print_install_hint() {
+  case "$1" in
+    adb) package="adb" ;;
+    ssh) package="openssh-client" ;;
+    awk) package="gawk" ;;
+    grep) package="grep" ;;
+    sort|uniq|mktemp|tr) package="coreutils" ;;
+    *) return ;;
+  esac
+  printf 'install on Ubuntu/Debian: sudo apt install %s\n' "$package" >&2
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "required command not found: $1" >&2
+    print_install_hint "$1"
     exit 1
   }
 }
+
+for command_name in awk sort uniq grep mktemp tr; do
+  require_command "$command_name"
+done
 
 if [ -n "$CONFIG_FILE" ] && [ "$SINGLE_TARGET_ARG_SET" -eq 1 ]; then
   echo "--config cannot be combined with --device, --adb-port, --relay-port, or --relay-ports" >&2
@@ -323,6 +340,11 @@ is_positive_int "$INTERVAL" || {
 }
 
 require_command adb
+
+if ! command -v ss >/dev/null 2>&1 && ! command -v lsof >/dev/null 2>&1; then
+  echo "warning: neither ss nor lsof is installed; port-owner diagnostics are limited" >&2
+  echo "install on Ubuntu/Debian: sudo apt install iproute2 lsof" >&2
+fi
 
 if [ "$NO_SSH" -eq 0 ]; then
   [ -n "$SSH_HOST" ] || {

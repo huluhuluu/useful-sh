@@ -99,9 +99,25 @@ human_size() {
   numfmt --to=iec-i --suffix=B "$1"
 }
 
+print_install_hint() {
+  case "$1" in
+    docker) package="docker.io" ;;
+    sudo)
+      echo "Install as root on Ubuntu/Debian: apt-get install sudo" >&2
+      return
+      ;;
+    du|sort|numfmt) package="coreutils" ;;
+    find) package="findutils" ;;
+    awk) package="gawk" ;;
+    *) return ;;
+  esac
+  printf 'Install on Ubuntu/Debian: sudo apt install %s\n' "$package" >&2
+}
+
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     printf 'Missing required command: %s\n' "$1" >&2
+    print_install_hint "$1"
     exit 1
   fi
 }

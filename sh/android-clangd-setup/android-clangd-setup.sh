@@ -62,8 +62,32 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required" >&2
+print_install_hint() {
+  case "$1" in
+    python3) package="python3" ;;
+    find) package="findutils" ;;
+    sort) package="coreutils" ;;
+    *) return ;;
+  esac
+  printf 'install on Ubuntu/Debian: sudo apt install %s\n' "$package" >&2
+  [ "$1" != "python3" ] || echo "install on macOS: brew install python" >&2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "required command not found: $1" >&2
+    print_install_hint "$1"
+    exit 1
+  }
+}
+
+for command_name in python3 find sort; do
+  require_command "$command_name"
+done
+
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
+  echo "Python 3.9 or newer is required" >&2
+  print_install_hint python3
   exit 1
 fi
 

@@ -67,3 +67,21 @@ sudo ./sh/docker-disk-scan/docker-disk-scan.sh my-container
 - 当前用户需要能够通过 `sudo` 访问 Docker daemon 和 `/var/lib/docker`
 - 脚本只执行 `docker inspect`、`du` 和 `find` 等读取操作，不包含删除、截断或 `prune`
 - 扫描大 writable layer 会产生磁盘读取负载，建议避开 I/O 敏感任务高峰
+
+可在运行前检查：
+
+```bash
+for cmd in bash docker sudo du find sort awk numfmt; do
+  command -v "$cmd" >/dev/null || echo "missing: $cmd"
+done
+```
+
+Ubuntu / Debian 可安装：
+
+```bash
+sudo apt install docker.io sudo coreutils findutils gawk
+```
+
+如果缺少的正是 `sudo`，需要先以 root 身份执行 `apt-get install sudo`。
+
+必需命令缺失时，脚本会在退出前打印对应的 `apt install` 命令。
