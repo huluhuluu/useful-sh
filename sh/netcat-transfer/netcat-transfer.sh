@@ -6,6 +6,8 @@ usage() {
 Usage:
   ./netcat-transfer.sh send [options]
   ./netcat-transfer.sh recv [options]
+  ./netcat-transfer.sh test --listen --port PORT
+  ./netcat-transfer.sh test --host HOST --port PORT [--timeout SECONDS]
 
 Order:
   1. Start recv on the destination machine.
@@ -14,12 +16,18 @@ Order:
 Modes:
   send                 Archive one or more paths and stream them with netcat
   recv                 Listen with netcat and extract the received archive
+  test                 Test whether the receiver TCP port is reachable
 
 Common options:
   --port PORT          Transfer port. It must match on both sides
   --compression MODE   Backward-compatible alias for --compress (send) or
                        --decompress (recv)
   -h, --help           Show this help
+
+Test options:
+  --host HOST          Receiver host
+  --listen             Listen for one connectivity test, then exit
+  --timeout SECONDS    Connection timeout (default: 5)
 
 Send options:
   --host HOST          Receiver host
@@ -42,6 +50,10 @@ Examples:
   ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
     --path ./model-a.pkl ./model-b.pkl --compress zstd
 
+  # Optional standalone connectivity test: destination first, source second
+  ./netcat-transfer.sh test --listen --port 9000
+  ./netcat-transfer.sh test --host 192.168.1.10 --port 9000
+
   # zsh expands this glob into multiple paths before invoking the script
   ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
     --path ~/**/*.pkl --compress gzip
@@ -62,6 +74,8 @@ PORT=""
 TARGET_PATH=""
 SEND_COMPRESSION="auto"
 RECV_DECOMPRESSION="none"
+CONNECT_TIMEOUT=5
+TEST_LISTEN=0
 SOURCE_PATHS=()
 
 require_command() {
@@ -142,6 +156,16 @@ nc_listen() {
   fi
 }
 
+nc_test_send() {
+  if is_openbsd_nc; then
+    printf 'NETCAT_TRANSFER_CONNECTIVITY_TEST_V1\n' |
+      nc -N -w "$CONNECT_TIMEOUT" "$HOST" "$PORT"
+  else
+    printf 'NETCAT_TRANSFER_CONNECTIVITY_TEST_V1\n' |
+      nc -q 1 -w "$CONNECT_TIMEOUT" "$HOST" "$PORT"
+  fi
+}
+
 send_stream() {
   printf 'NETCAT_TRANSFER_V1 compression=%s\n' "$SELECTED_COMPRESSION"
   (
@@ -154,8 +178,13 @@ receive_stream() {
   local protocol compression_field extra sender_compression selected_decompression
 
   if ! IFS=' ' read -r protocol compression_field extra; then
-    echo "transfer error: missing stream header; nothing was extracted" >&2
-    return 2
+    echo "connection probe received; resuming transfer listener"
+    return 10
+  fi
+
+  if [[ "$protocol" == "NETCAT_TRANSFER_CONNECTIVITY_TEST_V1" && -z "$compression_field" && -z "$extra" ]]; then
+    echo "connectivity test marker received; resuming transfer listener"
+    return 10
   fi
 
   if [[ "$protocol" != "NETCAT_TRANSFER_V1" || "$compression_field" != compression=* || -n "$extra" ]]; then
@@ -202,7 +231,7 @@ case "$1" in
     usage
     exit 0
     ;;
-  send|recv)
+  send|recv|test)
     MODE="$1"
     shift
     ;;
@@ -216,8 +245,8 @@ esac
 while (( $# > 0 )); do
   case "$1" in
     --host)
-      [[ "$MODE" == "send" ]] || {
-        echo "--host is only valid in send mode" >&2
+      [[ "$MODE" == "send" || "$MODE" == "test" ]] || {
+        echo "--host is only valid in send or test mode" >&2
         exit 1
       }
       (( $# >= 2 )) || { echo "missing value for --host" >&2; exit 1; }
@@ -241,7 +270,7 @@ while (( $# > 0 )); do
           echo "--path requires at least one file or directory" >&2
           exit 1
         fi
-      else
+      elif [[ "$MODE" == "recv" ]]; then
         (( $# >= 1 )) || { echo "missing value for --path" >&2; exit 1; }
         [[ -z "$TARGET_PATH" ]] || {
           echo "recv mode accepts only one destination path" >&2
@@ -249,7 +278,27 @@ while (( $# > 0 )); do
         }
         TARGET_PATH="$1"
         shift
+      else
+        echo "--path is not valid in test mode" >&2
+        exit 1
       fi
+      ;;
+    --timeout)
+      [[ "$MODE" == "test" ]] || {
+        echo "--timeout is only valid in test mode" >&2
+        exit 1
+      }
+      (( $# >= 2 )) || { echo "missing value for --timeout" >&2; exit 1; }
+      CONNECT_TIMEOUT="$2"
+      shift 2
+      ;;
+    --listen)
+      [[ "$MODE" == "test" ]] || {
+        echo "--listen is only valid in test mode" >&2
+        exit 1
+      }
+      TEST_LISTEN=1
+      shift
       ;;
     --compress)
       [[ "$MODE" == "send" ]] || {
@@ -286,6 +335,10 @@ while (( $# > 0 )); do
       shift
       ;;
     --compression)
+      [[ "$MODE" != "test" ]] || {
+        echo "--compression is not valid in test mode" >&2
+        exit 1
+      }
       (( $# >= 2 )) || { echo "missing value for --compression" >&2; exit 1; }
       if [[ "$MODE" == "send" ]]; then
         SEND_COMPRESSION="$2"
@@ -327,6 +380,11 @@ is_port "$PORT" || {
   echo "invalid port: $PORT" >&2
   exit 1
 }
+
+if ! [[ "$CONNECT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--timeout must be a positive integer" >&2
+  exit 1
+fi
 
 case "$MODE" in
   send)
@@ -379,7 +437,13 @@ case "$MODE" in
     echo "port:            $PORT"
     echo "compression:     $SELECTED_COMPRESSION"
 
-    send_stream | nc_send
+    if send_stream | nc_send; then
+      echo "send completed: stream closed cleanly"
+      echo "verify the receiver printed: receive completed successfully"
+    else
+      echo "send failed: connection or stream pipeline error" >&2
+      exit 1
+    fi
     ;;
   recv)
     [[ -n "$TARGET_PATH" ]] || {
@@ -407,6 +471,55 @@ case "$MODE" in
     echo "expected mode:   $RECV_DECOMPRESSION"
     echo "status:          listening; start send on the source machine now"
 
-    nc_listen | receive_stream
+    while true; do
+      if nc_listen | receive_stream; then
+        echo "receive completed successfully: $TARGET_PATH"
+        break
+      else
+        receive_status=$?
+        if (( receive_status == 10 )); then
+          continue
+        fi
+        echo "receive failed: nothing was extracted successfully" >&2
+        exit "$receive_status"
+      fi
+    done
+    ;;
+  test)
+    if (( TEST_LISTEN == 1 )); then
+      [[ -z "$HOST" ]] || {
+        echo "--host and --listen cannot be used together" >&2
+        exit 1
+      }
+
+      echo "mode:            test-listen"
+      echo "port:            $PORT"
+      echo "status:          waiting for connectivity test marker"
+
+      test_message="$(nc_listen)"
+      if [[ "$test_message" == "NETCAT_TRANSFER_CONNECTIVITY_TEST_V1" ]]; then
+        echo "connectivity test passed: marker received on port $PORT"
+      else
+        echo "connectivity test failed: unexpected or empty test data" >&2
+        exit 1
+      fi
+    else
+      [[ -n "$HOST" ]] || {
+        echo "--host is required unless test mode uses --listen" >&2
+        exit 1
+      }
+
+      echo "mode:            test-send"
+      echo "host:            $HOST"
+      echo "port:            $PORT"
+      echo "timeout:         ${CONNECT_TIMEOUT}s"
+
+      if nc_test_send; then
+        echo "connectivity test passed: marker sent to $HOST:$PORT"
+      else
+        echo "connectivity test failed: cannot send to $HOST:$PORT" >&2
+        exit 1
+      fi
+    fi
     ;;
 esac

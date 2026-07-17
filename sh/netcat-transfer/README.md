@@ -14,6 +14,8 @@
 
 如果先执行 `send`，目标端口尚未监听，`nc` 通常会立即报连接失败。
 
+可在正式发送前运行独立的 `test` 检查 TCP 端口。测试只发送固定标记，不需要目标目录，也不执行 tar、压缩或解压。也可以对正在运行的正式 `recv` 发送测试标记，`recv` 识别后会自动恢复监听。
+
 ## 2. 🔧 参数说明
 
 ### 通用参数
@@ -23,6 +25,16 @@
 | `--port PORT` | 传输端口，两端必须一致 | - |
 | `--compression MODE` | 兼容旧用法；在 `send` 中等同 `--compress`，在 `recv` 中等同 `--decompress` | 取决于模式 |
 | `-h, --help` | 显示帮助信息并退出 | - |
+
+### 连通性测试
+
+| 参数 | 说明 | 默认值 |
+| --- | --- | --- |
+| `test` | 测试接收端 TCP 端口是否可连接 | - |
+| `--host HOST` | 接收端地址 | - |
+| `--port PORT` | 接收端口 | - |
+| `--listen` | 在目标端监听一次测试标记，收到后退出 | - |
+| `--timeout SECONDS` | 连接超时秒数 | `5` |
 
 ### 发送端
 
@@ -70,6 +82,30 @@
   --path ./large.pkl \
   --compress zstd
 ```
+
+正式发送前可独立测试，不需要指定接收目录。
+
+目标机器先执行：
+
+```bash
+./sh/netcat-transfer/netcat-transfer.sh test \
+  --listen --port 9000
+```
+
+源机器再执行：
+
+```bash
+./sh/netcat-transfer/netcat-transfer.sh test \
+  --host 192.168.124.1 --port 9000 --timeout 5
+```
+
+成功时输出：
+
+```text
+connectivity test passed: marker sent to 192.168.124.1:9000
+```
+
+独立 `test --listen` 收到标记后会退出；它只验证网络连通性。若直接测试正在运行的正式 `recv`，`recv` 会打印 `connectivity test marker received` 并自动继续监听正式数据。
 
 ### 传输多个匹配文件
 
@@ -153,3 +189,5 @@ nothing was extracted; rerun recv with --decompress gzip or --decompress auto
 - 接收端默认不解压；使用 `--decompress auto` 时会读取协议头并选择对应工具
 - 新协议头与旧脚本的数据流格式不兼容，发送和接收两端应同时更新
 - 多个路径可能包含同名相对路径，发送前应检查脚本输出的 `common parent` 和 `source` 列表
+- 发送端的 `send completed` 只表示本地数据流和 socket 正常关闭；应以接收端打印的 `receive completed successfully` 作为解包成功依据
+- `test` 只交换固定文本标记，不检查压缩工具、tar、目录权限或磁盘空间
