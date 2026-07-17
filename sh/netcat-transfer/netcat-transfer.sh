@@ -1,5 +1,5 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
 usage() {
   cat <<'EOF'
@@ -7,85 +7,62 @@ Usage:
   ./netcat-transfer.sh send [options]
   ./netcat-transfer.sh recv [options]
 
+Order:
+  1. Start recv on the destination machine.
+  2. Start send on the source machine after recv is listening.
+
 Modes:
-  send               Archive a file or directory, compress it, and stream it with netcat
-  recv               Listen with netcat, receive the stream, decompress, and extract it
+  send                 Archive one or more paths and stream them with netcat
+  recv                 Listen with netcat and extract the received archive
 
 Common options:
-  --compression MODE Compression mode: auto, zstd, gzip, none (default: auto)
-  -h, --help         Show this help
+  --port PORT          Transfer port. It must match on both sides
+  --compression MODE   Backward-compatible alias for --compress (send) or
+                       --decompress (recv)
+  -h, --help           Show this help
 
 Send options:
-  --host HOST        Receiver host
-  --port PORT        Receiver port
-  --path PATH        File or directory to send
+  --host HOST          Receiver host
+  --path PATH...       One or more files/directories. Repeatable; shell globs
+                       expanded to multiple arguments are supported
+  --compress MODE      Compression: auto, zstd, gzip, none (default: auto)
+  --no-compress        Send an uncompressed tar stream
 
 Receive options:
-  --port PORT        Listen port
-  --path DIR         Destination directory for extraction
+  --path DIR           Destination directory for extraction
+  --decompress MODE    Expected compression: auto, zstd, gzip, none
+                       (default: none; auto trusts the sender stream header)
+  --no-decompress      Expect an uncompressed tar stream (the default)
 
 Examples:
-  ./netcat-transfer.sh recv --port 9000 --path /tmp/recv
-  ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 --path ./demo
-  ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 --path ./demo --compression gzip
+  # Destination first
+  ./netcat-transfer.sh recv --port 9000 --path /tmp/recv --decompress zstd
+
+  # Source second
+  ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
+    --path ./model-a.pkl ./model-b.pkl --compress zstd
+
+  # zsh expands this glob into multiple paths before invoking the script
+  ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
+    --path ~/**/*.pkl --compress gzip
+
+  # No compression: both sides must disable it
+  ./netcat-transfer.sh recv --port 9000 --path /tmp/recv --no-decompress
+  ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
+    --path ./large.bin --no-compress
+
+The sender writes its actual compression mode into a stream header. A mismatch
+is rejected before extraction. Both machines must use this script version.
 EOF
 }
 
 MODE=""
 HOST=""
 PORT=""
-SOURCE_PATH=""
 TARGET_PATH=""
-COMPRESSION="auto"
-
-[ "$#" -gt 0 ] || {
-  usage >&2
-  exit 1
-}
-
-case "$1" in
-  -h|--help)
-    usage
-    exit 0
-    ;;
-esac
-
-MODE=$1
-shift
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --host)
-      [ "$#" -ge 2 ] || { echo "missing value for --host" >&2; exit 1; }
-      HOST=$2
-      shift 2
-      ;;
-    --port)
-      [ "$#" -ge 2 ] || { echo "missing value for --port" >&2; exit 1; }
-      PORT=$2
-      shift 2
-      ;;
-    --path)
-      [ "$#" -ge 2 ] || { echo "missing value for --path" >&2; exit 1; }
-      TARGET_PATH=$2
-      shift 2
-      ;;
-    --compression)
-      [ "$#" -ge 2 ] || { echo "missing value for --compression" >&2; exit 1; }
-      COMPRESSION=$2
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "unknown argument: $1" >&2
-      usage >&2
-      exit 1
-      ;;
-  esac
-done
+SEND_COMPRESSION="auto"
+RECV_DECOMPRESSION="none"
+SOURCE_PATHS=()
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -95,17 +72,10 @@ require_command() {
 }
 
 is_port() {
-  case "$1" in
-    ''|*[!0-9]*)
-      return 1
-      ;;
-    *)
-      [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
-      ;;
-  esac
+  [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 && 10#$1 <= 65535 ))
 }
 
-pick_compression() {
+pick_codec() {
   case "$1" in
     auto)
       if command -v zstd >/dev/null 2>&1; then
@@ -118,145 +88,325 @@ pick_compression() {
       printf '%s\n' "$1"
       ;;
     *)
-      echo "unsupported compression: $1" >&2
+      echo "unsupported compression mode: $1" >&2
       exit 1
       ;;
   esac
 }
 
-compress_cmd() {
+compress_stream() {
   case "$1" in
     zstd)
-      require_command zstd
-      printf '%s\n' "zstd -T0 -q -c"
+      zstd -T0 -q -c
       ;;
     gzip)
-      require_command gzip
-      printf '%s\n' "gzip -c"
+      gzip -c
       ;;
     none)
-      printf '%s\n' "cat"
+      cat
       ;;
   esac
 }
 
-decompress_cmd() {
+decompress_stream() {
   case "$1" in
     zstd)
-      require_command zstd
-      printf '%s\n' "zstd -q -d -c"
+      zstd -q -d -c
       ;;
     gzip)
-      require_command gzip
-      printf '%s\n' "gzip -d -c"
+      gzip -d -c
       ;;
     none)
-      printf '%s\n' "cat"
+      cat
       ;;
   esac
 }
 
-nc_listen_args() {
-  if nc -h 2>&1 | grep -qi 'openbsd'; then
-    printf '%s\n' "-l $1"
+is_openbsd_nc() {
+  nc -h 2>&1 | grep -qi 'openbsd'
+}
+
+nc_send() {
+  if is_openbsd_nc; then
+    nc -N "$HOST" "$PORT"
   else
-    printf '%s\n' "-l -p $1"
+    nc "$HOST" "$PORT"
   fi
 }
 
-nc_send_args() {
-  if nc -h 2>&1 | grep -qi 'openbsd'; then
-    printf '%s\n' "-N"
+nc_listen() {
+  if is_openbsd_nc; then
+    nc -l "$PORT"
   else
-    printf '%s\n' ""
+    nc -l -p "$PORT"
   fi
 }
+
+send_stream() {
+  printf 'NETCAT_TRANSFER_V1 compression=%s\n' "$SELECTED_COMPRESSION"
+  (
+    cd "$COMMON_PARENT"
+    tar -cf - -- "${SOURCE_REL[@]}"
+  ) | compress_stream "$SELECTED_COMPRESSION"
+}
+
+receive_stream() {
+  local protocol compression_field extra sender_compression selected_decompression
+
+  if ! IFS=' ' read -r protocol compression_field extra; then
+    echo "transfer error: missing stream header; nothing was extracted" >&2
+    return 2
+  fi
+
+  if [[ "$protocol" != "NETCAT_TRANSFER_V1" || "$compression_field" != compression=* || -n "$extra" ]]; then
+    echo "transfer error: invalid or legacy stream header; nothing was extracted" >&2
+    echo "both machines must use the current netcat-transfer.sh version" >&2
+    return 2
+  fi
+
+  sender_compression="${compression_field#compression=}"
+  case "$sender_compression" in
+    zstd|gzip|none) ;;
+    *)
+      printf 'transfer error: sender reported unsupported compression: %s\n' \
+        "$sender_compression" >&2
+      return 2
+      ;;
+  esac
+
+  if [[ "$RECV_DECOMPRESSION" != "auto" && "$RECV_DECOMPRESSION" != "$sender_compression" ]]; then
+    printf 'compression mismatch: sender=%s, receiver=%s\n' \
+      "$sender_compression" "$RECV_DECOMPRESSION" >&2
+    printf 'nothing was extracted; rerun recv with --decompress %s or --decompress auto\n' \
+      "$sender_compression" >&2
+    return 2
+  fi
+
+  selected_decompression="$sender_compression"
+  case "$selected_decompression" in
+    zstd) require_command zstd ;;
+    gzip) require_command gzip ;;
+  esac
+
+  echo "stream compression: $sender_compression"
+  decompress_stream "$selected_decompression" | tar -xf - -C "$TARGET_PATH"
+}
+
+if (( $# == 0 )); then
+  usage >&2
+  exit 1
+fi
+
+case "$1" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  send|recv)
+    MODE="$1"
+    shift
+    ;;
+  *)
+    echo "unknown mode: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
+
+while (( $# > 0 )); do
+  case "$1" in
+    --host)
+      [[ "$MODE" == "send" ]] || {
+        echo "--host is only valid in send mode" >&2
+        exit 1
+      }
+      (( $# >= 2 )) || { echo "missing value for --host" >&2; exit 1; }
+      HOST="$2"
+      shift 2
+      ;;
+    --port)
+      (( $# >= 2 )) || { echo "missing value for --port" >&2; exit 1; }
+      PORT="$2"
+      shift 2
+      ;;
+    --path)
+      shift
+      if [[ "$MODE" == "send" ]]; then
+        paths_before=${#SOURCE_PATHS[@]}
+        while (( $# > 0 )) && [[ "$1" != -* ]]; do
+          SOURCE_PATHS+=("$1")
+          shift
+        done
+        if (( ${#SOURCE_PATHS[@]} == paths_before )); then
+          echo "--path requires at least one file or directory" >&2
+          exit 1
+        fi
+      else
+        (( $# >= 1 )) || { echo "missing value for --path" >&2; exit 1; }
+        [[ -z "$TARGET_PATH" ]] || {
+          echo "recv mode accepts only one destination path" >&2
+          exit 1
+        }
+        TARGET_PATH="$1"
+        shift
+      fi
+      ;;
+    --compress)
+      [[ "$MODE" == "send" ]] || {
+        echo "--compress is only valid in send mode" >&2
+        exit 1
+      }
+      (( $# >= 2 )) || { echo "missing value for --compress" >&2; exit 1; }
+      SEND_COMPRESSION="$2"
+      shift 2
+      ;;
+    --no-compress)
+      [[ "$MODE" == "send" ]] || {
+        echo "--no-compress is only valid in send mode" >&2
+        exit 1
+      }
+      SEND_COMPRESSION="none"
+      shift
+      ;;
+    --decompress)
+      [[ "$MODE" == "recv" ]] || {
+        echo "--decompress is only valid in recv mode" >&2
+        exit 1
+      }
+      (( $# >= 2 )) || { echo "missing value for --decompress" >&2; exit 1; }
+      RECV_DECOMPRESSION="$2"
+      shift 2
+      ;;
+    --no-decompress)
+      [[ "$MODE" == "recv" ]] || {
+        echo "--no-decompress is only valid in recv mode" >&2
+        exit 1
+      }
+      RECV_DECOMPRESSION="none"
+      shift
+      ;;
+    --compression)
+      (( $# >= 2 )) || { echo "missing value for --compression" >&2; exit 1; }
+      if [[ "$MODE" == "send" ]]; then
+        SEND_COMPRESSION="$2"
+      else
+        RECV_DECOMPRESSION="$2"
+      fi
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      if [[ "$MODE" == "send" ]]; then
+        SOURCE_PATHS+=("$@")
+        set --
+      else
+        echo "unexpected positional arguments in recv mode" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 require_command tar
 require_command nc
 
-SELECTED_COMPRESSION="$(pick_compression "$COMPRESSION")"
-COMPRESS_CMD="$(compress_cmd "$SELECTED_COMPRESSION")"
-DECOMPRESS_CMD="$(decompress_cmd "$SELECTED_COMPRESSION")"
+[[ -n "$PORT" ]] || {
+  echo "--port is required for $MODE mode" >&2
+  exit 1
+}
+is_port "$PORT" || {
+  echo "invalid port: $PORT" >&2
+  exit 1
+}
 
 case "$MODE" in
   send)
-    [ -n "$PORT" ] || {
-      echo "--port is required for send mode" >&2
-      exit 1
-    }
-    is_port "$PORT" || {
-      echo "invalid port: $PORT" >&2
-      exit 1
-    }
-    [ -n "$HOST" ] || {
+    [[ -n "$HOST" ]] || {
       echo "--host is required for send mode" >&2
       exit 1
     }
-    [ -n "$TARGET_PATH" ] || {
+    (( ${#SOURCE_PATHS[@]} > 0 )) || {
       echo "--path is required for send mode" >&2
       exit 1
     }
-    SOURCE_PATH=$TARGET_PATH
-    [ -e "$SOURCE_PATH" ] || {
-      echo "source path not found: $SOURCE_PATH" >&2
-      exit 1
-    }
 
-    SOURCE_ABS="$(cd "$(dirname "$SOURCE_PATH")" && pwd)/$(basename "$SOURCE_PATH")"
-    SOURCE_PARENT="$(dirname "$SOURCE_ABS")"
-    SOURCE_NAME="$(basename "$SOURCE_ABS")"
-    SEND_ARGS="$(nc_send_args)"
+    SOURCE_ABS=()
+    for source_path in "${SOURCE_PATHS[@]}"; do
+      [[ -e "$source_path" ]] || {
+        echo "source path not found: $source_path" >&2
+        exit 1
+      }
+      source_abs="$(cd "$(dirname "$source_path")" && pwd -P)/$(basename "$source_path")"
+      SOURCE_ABS+=("$source_abs")
+    done
+
+    COMMON_PARENT="$(dirname "${SOURCE_ABS[0]}")"
+    for source_abs in "${SOURCE_ABS[@]}"; do
+      while [[ "$COMMON_PARENT" != "/" && "$source_abs" != "$COMMON_PARENT"/* ]]; do
+        COMMON_PARENT="$(dirname "$COMMON_PARENT")"
+      done
+    done
+
+    SOURCE_REL=()
+    for source_abs in "${SOURCE_ABS[@]}"; do
+      if [[ "$COMMON_PARENT" == "/" ]]; then
+        SOURCE_REL+=("${source_abs#/}")
+      else
+        SOURCE_REL+=("${source_abs#"$COMMON_PARENT"/}")
+      fi
+    done
+
+    SELECTED_COMPRESSION="$(pick_codec "$SEND_COMPRESSION")"
+    case "$SELECTED_COMPRESSION" in
+      zstd) require_command zstd ;;
+      gzip) require_command gzip ;;
+    esac
 
     echo "mode:            send"
-    echo "source:          $SOURCE_ABS"
+    echo "common parent:   $COMMON_PARENT"
+    echo "source count:    ${#SOURCE_REL[@]}"
+    printf 'source:          %s\n' "${SOURCE_REL[@]}"
     echo "host:            $HOST"
     echo "port:            $PORT"
     echo "compression:     $SELECTED_COMPRESSION"
 
-    (
-      cd "$SOURCE_PARENT"
-      if [ -n "$SEND_ARGS" ]; then
-        tar -cf - "$SOURCE_NAME" | eval "$COMPRESS_CMD" | nc $SEND_ARGS "$HOST" "$PORT"
-      else
-        tar -cf - "$SOURCE_NAME" | eval "$COMPRESS_CMD" | nc "$HOST" "$PORT"
-      fi
-    )
+    send_stream | nc_send
     ;;
   recv)
-    [ -n "$PORT" ] || {
-      echo "--port is required for recv mode" >&2
-      exit 1
-    }
-    is_port "$PORT" || {
-      echo "invalid port: $PORT" >&2
-      exit 1
-    }
-    [ -n "$TARGET_PATH" ] || {
+    [[ -n "$TARGET_PATH" ]] || {
       echo "--path is required for recv mode" >&2
       exit 1
     }
 
-    DEST_DIR=$TARGET_PATH
-
-    mkdir -p "$DEST_DIR"
-    [ -w "$DEST_DIR" ] || {
-      echo "destination directory is not writable: $DEST_DIR" >&2
+    mkdir -p "$TARGET_PATH"
+    [[ -w "$TARGET_PATH" && -x "$TARGET_PATH" ]] || {
+      echo "destination directory requires write and execute permissions: $TARGET_PATH" >&2
       exit 1
     }
 
-    LISTEN_ARGS="$(nc_listen_args "$PORT")"
+    case "$RECV_DECOMPRESSION" in
+      auto|zstd|gzip|none) ;;
+      *)
+        echo "unsupported decompression mode: $RECV_DECOMPRESSION" >&2
+        exit 1
+        ;;
+    esac
 
     echo "mode:            recv"
-    echo "destination:     $DEST_DIR"
+    echo "destination:     $TARGET_PATH"
     echo "port:            $PORT"
-    echo "compression:     $SELECTED_COMPRESSION"
+    echo "expected mode:   $RECV_DECOMPRESSION"
+    echo "status:          listening; start send on the source machine now"
 
-    eval "nc $LISTEN_ARGS" | eval "$DECOMPRESS_CMD" | tar -xf - -C "$DEST_DIR"
-    ;;
-  *)
-    echo "unknown mode: $MODE" >&2
-    usage >&2
-    exit 1
+    nc_listen | receive_stream
     ;;
 esac

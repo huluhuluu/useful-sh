@@ -15,6 +15,7 @@
 | [`android-clangd-setup.sh`](./sh/android-clangd-setup/android-clangd-setup.sh) | 自动探测 Android NDK，并给目标项目补齐 VS Code `clangd` 和 `.clangd` 配置 | [README](./sh/android-clangd-setup/README.md) |
 | [`codex-zsh-history-isolation.sh`](./sh/codex-zsh-history-isolation/codex-zsh-history-isolation.sh) | 隔离 Codex 使用时的 `zsh` 历史，并控制 Codex 的 `history.jsonl` 保留模式 | [README](./sh/codex-zsh-history-isolation/README.md) |
 | [`codex-skills-bootstrap`](./sh/codex-skills-bootstrap/) | 通过 `cc-switch` 给 Codex 或其它 agent 批量安装常用 skills | [README](./sh/codex-skills-bootstrap/README.md) |
+| [`docker-disk-scan.sh`](./sh/docker-disk-scan/docker-disk-scan.sh) | 只读扫描 Docker 容器 writable layer，列出大目录和大文件 | [README](./sh/docker-disk-scan/README.md) |
 | [`file-integrity.sh`](./sh/file-integrity/file-integrity.sh) | 快速计算大文件的 `sha256`、`md5`、`blake3` 等完整性 hash，并支持期望值校验 | [README](./sh/file-integrity/README.md) |
 | [`netcat-transfer.sh`](./sh/netcat-transfer/netcat-transfer.sh) | 使用 `netcat` 压缩传输文件或目录，接收端自动解压 | [README](./sh/netcat-transfer/README.md) |
 | [`nvim-clangd-setup.sh`](./sh/nvim-clangd-setup/nvim-clangd-setup.sh) | 自动探测 Android NDK，并为 LazyVim 写入 `clangd` 配置 | [README](./sh/nvim-clangd-setup/README.md) |
@@ -26,6 +27,8 @@
 
 先看脚本说明，再执行具体命令。每个脚本都提供 `--help`。
 
+使用 `netcat-transfer.sh` 时必须先在目标机器启动 `recv`，确认开始监听后，再在源机器执行 `send`。接收端默认不解压；发送端与接收端模式不一致时会在解包前报错，也可使用 `--decompress auto` 按发送端协议头自动选择。
+
 Linux / Git Bash：
 
 ```bash
@@ -33,6 +36,7 @@ Linux / Git Bash：
 ./sh/android-clangd-setup/android-clangd-setup.sh --help
 ./sh/codex-skills-bootstrap/codex-skills-bootstrap.sh --help
 ./sh/codex-zsh-history-isolation/codex-zsh-history-isolation.sh --help
+./sh/docker-disk-scan/docker-disk-scan.sh --help
 ./sh/file-integrity/file-integrity.sh --help
 ./sh/netcat-transfer/netcat-transfer.sh --help
 ./sh/nvim-clangd-setup/nvim-clangd-setup.sh --help
