@@ -22,6 +22,8 @@ Common options:
   --port PORT          Transfer port. It must match on both sides
   --compression MODE   Backward-compatible alias for --compress (send) or
                        --decompress (recv)
+  --progress           Show pv transfer progress (default)
+  --no-progress        Disable pv transfer progress
   -h, --help           Show this help
 
 Test options:
@@ -63,6 +65,10 @@ Examples:
   ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
     --path ./large.bin --no-compress
 
+  # Disable progress output when running non-interactively
+  ./netcat-transfer.sh send --host 192.168.1.10 --port 9000 \
+    --path ./large.bin --no-compress --no-progress
+
 The sender writes its actual compression mode into a stream header. A mismatch
 is rejected before extraction. Both machines must use this script version.
 EOF
@@ -76,6 +82,8 @@ SEND_COMPRESSION="auto"
 RECV_DECOMPRESSION="none"
 CONNECT_TIMEOUT=5
 TEST_LISTEN=0
+SHOW_PROGRESS=1
+PV_AVAILABLE=0
 SOURCE_PATHS=()
 
 require_command() {
@@ -83,6 +91,43 @@ require_command() {
     echo "required command not found: $1" >&2
     exit 1
   }
+}
+
+estimate_tar_bytes() {
+  find "${SOURCE_ABS[@]}" -printf '%y\t%s\t%D\t%i\t%n\n' |
+    awk -F '\t' '
+      {
+        entry_bytes = 512
+        if ($1 == "f") {
+          inode = $3 ":" $4
+          if ($5 < 2 || !seen[inode]++) {
+            entry_bytes += int(($2 + 511) / 512) * 512
+          }
+        }
+        total += entry_bytes
+      }
+      END {
+        # Two end markers, rounded to the default GNU tar 10 KiB record.
+        total += 1024
+        record_bytes = 10240
+        printf "%.0f\n", int((total + record_bytes - 1) / record_bytes) * record_bytes
+      }
+    '
+}
+
+progress_stream() {
+  local total_bytes=$1
+  local label=$2
+
+  if (( SHOW_PROGRESS == 1 && PV_AVAILABLE == 1 )); then
+    if (( total_bytes > 0 )); then
+      pv -f -N "$label" -p -t -e -r -b -s "$total_bytes"
+    else
+      pv -f -N "$label" -t -r -b
+    fi
+  else
+    cat
+  fi
 }
 
 is_port() {
@@ -167,33 +212,39 @@ nc_test_send() {
 }
 
 send_stream() {
-  printf 'NETCAT_TRANSFER_V1 compression=%s\n' "$SELECTED_COMPRESSION"
+  printf 'NETCAT_TRANSFER_V1 compression=%s size=%s\n' \
+    "$SELECTED_COMPRESSION" "$SOURCE_TOTAL_BYTES"
   (
     cd "$COMMON_PARENT"
     tar -cf - -- "${SOURCE_REL[@]}"
-  ) | compress_stream "$SELECTED_COMPRESSION"
+  ) | progress_stream "$SOURCE_TOTAL_BYTES" "send(raw)" |
+    compress_stream "$SELECTED_COMPRESSION"
 }
 
 receive_stream() {
-  local protocol compression_field extra sender_compression selected_decompression
+  local protocol compression_field size_field extra
+  local sender_compression sender_size selected_decompression
 
-  if ! IFS=' ' read -r protocol compression_field extra; then
+  if ! IFS=' ' read -r protocol compression_field size_field extra; then
     echo "connection probe received; resuming transfer listener"
     return 10
   fi
 
-  if [[ "$protocol" == "NETCAT_TRANSFER_CONNECTIVITY_TEST_V1" && -z "$compression_field" && -z "$extra" ]]; then
+  if [[ "$protocol" == "NETCAT_TRANSFER_CONNECTIVITY_TEST_V1" && \
+    -z "$compression_field" && -z "$size_field" && -z "$extra" ]]; then
     echo "connectivity test marker received; resuming transfer listener"
     return 10
   fi
 
-  if [[ "$protocol" != "NETCAT_TRANSFER_V1" || "$compression_field" != compression=* || -n "$extra" ]]; then
+  if [[ "$protocol" != "NETCAT_TRANSFER_V1" || \
+    "$compression_field" != compression=* || "$size_field" != size=* || -n "$extra" ]]; then
     echo "transfer error: invalid or legacy stream header; nothing was extracted" >&2
     echo "both machines must use the current netcat-transfer.sh version" >&2
     return 2
   fi
 
   sender_compression="${compression_field#compression=}"
+  sender_size="${size_field#size=}"
   case "$sender_compression" in
     zstd|gzip|none) ;;
     *)
@@ -202,6 +253,11 @@ receive_stream() {
       return 2
       ;;
   esac
+
+  if ! [[ "$sender_size" =~ ^[0-9]+$ ]]; then
+    printf 'transfer error: sender reported invalid source size: %s\n' "$sender_size" >&2
+    return 2
+  fi
 
   if [[ "$RECV_DECOMPRESSION" != "auto" && "$RECV_DECOMPRESSION" != "$sender_compression" ]]; then
     printf 'compression mismatch: sender=%s, receiver=%s\n' \
@@ -218,7 +274,9 @@ receive_stream() {
   esac
 
   echo "stream compression: $sender_compression"
-  decompress_stream "$selected_decompression" | tar -xf - -C "$TARGET_PATH"
+  decompress_stream "$selected_decompression" |
+    progress_stream "$sender_size" "recv(raw)" |
+    tar -xf - -C "$TARGET_PATH"
 }
 
 if (( $# == 0 )); then
@@ -347,6 +405,22 @@ while (( $# > 0 )); do
       fi
       shift 2
       ;;
+    --progress)
+      [[ "$MODE" != "test" ]] || {
+        echo "--progress is not valid in test mode" >&2
+        exit 1
+      }
+      SHOW_PROGRESS=1
+      shift
+      ;;
+    --no-progress)
+      [[ "$MODE" != "test" ]] || {
+        echo "--no-progress is not valid in test mode" >&2
+        exit 1
+      }
+      SHOW_PROGRESS=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -371,6 +445,15 @@ done
 
 require_command tar
 require_command nc
+
+if (( SHOW_PROGRESS == 1 )) && [[ "$MODE" != "test" ]]; then
+  if command -v pv >/dev/null 2>&1; then
+    PV_AVAILABLE=1
+  else
+    echo "warning: pv is not installed; continuing without progress output" >&2
+    SHOW_PROGRESS=0
+  fi
+fi
 
 [[ -n "$PORT" ]] || {
   echo "--port is required for $MODE mode" >&2
@@ -423,6 +506,10 @@ case "$MODE" in
       fi
     done
 
+    require_command find
+    require_command awk
+    SOURCE_TOTAL_BYTES="$(estimate_tar_bytes)"
+
     SELECTED_COMPRESSION="$(pick_codec "$SEND_COMPRESSION")"
     case "$SELECTED_COMPRESSION" in
       zstd) require_command zstd ;;
@@ -432,10 +519,12 @@ case "$MODE" in
     echo "mode:            send"
     echo "common parent:   $COMMON_PARENT"
     echo "source count:    ${#SOURCE_REL[@]}"
+    echo "raw tar bytes:   $SOURCE_TOTAL_BYTES (estimated)"
     printf 'source:          %s\n' "${SOURCE_REL[@]}"
     echo "host:            $HOST"
     echo "port:            $PORT"
     echo "compression:     $SELECTED_COMPRESSION"
+    echo "progress:        $([[ "$SHOW_PROGRESS" == 1 ]] && echo enabled || echo disabled)"
 
     if send_stream | nc_send; then
       echo "send completed: stream closed cleanly"
@@ -469,6 +558,7 @@ case "$MODE" in
     echo "destination:     $TARGET_PATH"
     echo "port:            $PORT"
     echo "expected mode:   $RECV_DECOMPRESSION"
+    echo "progress:        $([[ "$SHOW_PROGRESS" == 1 ]] && echo enabled || echo disabled)"
     echo "status:          listening; start send on the source machine now"
 
     while true; do
