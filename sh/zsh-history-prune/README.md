@@ -2,6 +2,22 @@
 
 使用脚本 [zsh-history-prune.sh](./zsh-history-prune.sh) 按完整命令行出现次数和最近历史筛选 `~/.zsh_history` 并清理。🧹
 
+## 依赖检查
+
+脚本使用 POSIX shell 和常见系统工具，不要求安装 `zsh` 命令本身：
+
+```bash
+for cmd in awk sort mktemp cmp cp date; do
+  command -v "$cmd" >/dev/null || echo "missing: $cmd"
+done
+```
+
+Ubuntu / Debian 精简系统可安装：
+
+```bash
+sudo apt install mawk coreutils
+```
+
 ## 1. 🔧 参数说明
 
 | 参数 | 说明 | 默认值 |

@@ -1,21 +1,25 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./file-integrity.sh [options] FILE
+  ./file-integrity.sh [options] FILE...
   ./file-integrity.sh --check HASH FILE [options]
 
 Options:
   -a, --algo NAME    Hash algorithm: auto, md5, sha1, sha256, sha512, blake3, xxh64 (default: sha256)
-  --check HASH       Compare calculated hash with expected HASH
+  --check HASH       Compare calculated hash with expected HASH (single file only)
   --list             List available algorithms on this machine
   -h, --help         Show this help
 
+Files:
+  FILE...            One or more files. Shell-expanded globs are supported
+
 Examples:
-  ./file-integrity.sh large.bin
+  ./file-integrity.sh large.bin another.bin
   ./file-integrity.sh --algo md5 large.bin
+  ./file-integrity.sh --algo md5 ~/**/*.pkl
   ./file-integrity.sh --algo blake3 large.bin
   ./file-integrity.sh --check 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824 large.bin
 EOF
@@ -23,7 +27,7 @@ EOF
 
 ALGO="sha256"
 CHECK_HASH=""
-FILE_PATH=""
+FILE_PATHS=()
 
 require_file() {
   [ -n "$1" ] || {
@@ -197,23 +201,37 @@ while [ "$#" -gt 0 ]; do
       usage
       exit 0
       ;;
+    --)
+      shift
+      FILE_PATHS+=("$@")
+      break
+      ;;
     -*)
       echo "unknown argument: $1" >&2
       usage >&2
       exit 1
       ;;
     *)
-      [ -z "$FILE_PATH" ] || {
-        echo "only one file path is supported" >&2
-        exit 1
-      }
-      FILE_PATH=$1
+      FILE_PATHS+=("$1")
       shift
       ;;
   esac
 done
 
-require_file "$FILE_PATH"
+if (( ${#FILE_PATHS[@]} == 0 )); then
+  echo "missing file path" >&2
+  usage >&2
+  exit 1
+fi
+
+if [[ -n "$CHECK_HASH" ]] && (( ${#FILE_PATHS[@]} != 1 )); then
+  echo "--check requires exactly one file path" >&2
+  exit 1
+fi
+
+for file_path in "${FILE_PATHS[@]}"; do
+  require_file "$file_path"
+done
 
 if [ "$ALGO" = "auto" ]; then
   SELECTED_ALGO="$(pick_auto_algo)"
@@ -221,17 +239,18 @@ else
   SELECTED_ALGO="$ALGO"
 fi
 
-HASH="$(hash_file "$SELECTED_ALGO" "$FILE_PATH")"
+for file_path in "${FILE_PATHS[@]}"; do
+  HASH="$(hash_file "$SELECTED_ALGO" "$file_path")"
+  printf '%s  %s  %s\n' "$SELECTED_ALGO" "$HASH" "$file_path"
 
-printf '%s  %s  %s\n' "$SELECTED_ALGO" "$HASH" "$FILE_PATH"
-
-if [ -n "$CHECK_HASH" ]; then
-  if [ "$HASH" = "$CHECK_HASH" ]; then
-    echo "check: OK"
-  else
-    echo "check: FAILED" >&2
-    echo "expected: $CHECK_HASH" >&2
-    echo "actual:   $HASH" >&2
-    exit 2
+  if [[ -n "$CHECK_HASH" ]]; then
+    if [[ "$HASH" == "$CHECK_HASH" ]]; then
+      echo "check: OK"
+    else
+      echo "check: FAILED" >&2
+      echo "expected: $CHECK_HASH" >&2
+      echo "actual:   $HASH" >&2
+      exit 2
+    fi
   fi
-fi
+done

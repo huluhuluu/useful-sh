@@ -4,6 +4,23 @@
 
 > 适用场景：手机通过有线 USB 接在一台 Linux 主机上，远端机器通过 SSH reverse tunnel 访问手机上的 ADB 网络调试端口。
 
+## 依赖检查
+
+`adb` 是必需依赖；默认启用 SSH 反向转发时还需要 `ssh`：
+
+```bash
+for cmd in adb awk sort uniq grep mktemp; do
+  command -v "$cmd" >/dev/null || echo "missing: $cmd"
+done
+command -v ssh >/dev/null || echo "required unless using --no-ssh: ssh"
+```
+
+`ss` 和 `lsof` 用于诊断端口占用，文末的本地端口转发示例另外需要 `socat`。Ubuntu / Debian 可安装：
+
+```bash
+sudo apt install adb openssh-client iproute2 lsof socat
+```
+
 默认端口如下：
 
 | 端口 | 说明 |

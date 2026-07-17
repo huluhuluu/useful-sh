@@ -16,6 +16,30 @@
 
 可在正式发送前运行独立的 `test` 检查 TCP 端口。测试只发送固定标记，不需要目标目录，也不执行 tar、压缩或解压。也可以对正在运行的正式 `recv` 发送测试标记，`recv` 识别后会自动恢复监听。
 
+### 依赖检查
+
+运行前可用下面的命令列出缺少的必需依赖：
+
+```bash
+for cmd in bash tar nc find awk; do
+  command -v "$cmd" >/dev/null || echo "missing: $cmd"
+done
+```
+
+`pv` 只用于显示进度；`gzip` 和 `zstd` 分别用于对应的压缩模式，`auto` 会优先使用 `zstd` 并回退到 `gzip`：
+
+```bash
+command -v pv >/dev/null || echo "optional: pv"
+command -v gzip >/dev/null || echo "compression unavailable: gzip"
+command -v zstd >/dev/null || echo "compression unavailable: zstd"
+```
+
+Ubuntu / Debian 可安装：
+
+```bash
+sudo apt install netcat-openbsd pv zstd gzip tar findutils gawk
+```
+
 ## 2. 🔧 参数说明
 
 ### 通用参数
@@ -191,6 +215,7 @@ send(raw): 8.00GiB 0:01:12 [113MiB/s] [=======>] 80% ETA 0:00:18
 ```
 
 - 脚本会在发送前遍历路径，根据文件大小、tar 头和块填充估算原始流总量，不会为了计算总量而预读文件内容
+- 发送端的 `raw tar size` 使用十进制 GB，`1 GB = 1,000,000,000 bytes`
 - 超长路径等情况可能增加额外 tar 元数据，最终百分比可能略高或略低于 `100%`
 - 进度中的速度是未压缩数据速度，不是网口上的压缩流量速度
 - 没有安装 `pv` 时脚本会输出警告，然后在不显示进度的情况下继续传输

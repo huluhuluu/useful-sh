@@ -130,6 +130,10 @@ progress_stream() {
   fi
 }
 
+format_gb() {
+  awk -v bytes="$1" 'BEGIN { printf "%.2f GB", bytes / 1000000000 }'
+}
+
 is_port() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 && 10#$1 <= 65535 ))
 }
@@ -519,7 +523,7 @@ case "$MODE" in
     echo "mode:            send"
     echo "common parent:   $COMMON_PARENT"
     echo "source count:    ${#SOURCE_REL[@]}"
-    echo "raw tar bytes:   $SOURCE_TOTAL_BYTES (estimated)"
+    echo "raw tar size:    $(format_gb "$SOURCE_TOTAL_BYTES") (estimated)"
     printf 'source:          %s\n' "${SOURCE_REL[@]}"
     echo "host:            $HOST"
     echo "port:            $PORT"

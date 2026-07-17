@@ -2,6 +2,25 @@
 
 通过脚本 [android-clangd-setup.sh](./android-clangd-setup.sh)，自动探测 Android NDK 路径，并为目标项目补齐交叉编译场景下的 `clangd` 配置。📱
 
+## 依赖检查
+
+脚本需要 Python 3.9+ 和基础文件查找命令：
+
+```bash
+python3 -c 'import sys; assert sys.version_info >= (3, 9); print(sys.version)'
+for cmd in find sort; do
+  command -v "$cmd" >/dev/null || echo "missing: $cmd"
+done
+```
+
+Ubuntu / Debian 可安装这些基础依赖：
+
+```bash
+sudo apt install python3 findutils coreutils
+```
+
+还必须提前准备好 Android NDK，且 NDK 中应存在可执行的 `toolchains/llvm/prebuilt/*/bin/clang` 和 `clangd`。可通过环境变量让脚本探测，或使用 `--ndk-path DIR` 指定；本文档不提供 Android NDK 安装步骤。
+
 ## 1. 🔧 参数说明
 
 | 参数 | 说明 | 默认值 |

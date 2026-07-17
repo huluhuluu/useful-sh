@@ -2,6 +2,23 @@
 
 使用脚本 [codex-zsh-history-isolation.sh](./codex-zsh-history-isolation.sh) 隔离 Codex shell 历史，避免污染 `zsh` 的命令历史，并设置 Codex 自己的 `history.jsonl` 保留模式。🧠
 
+## 依赖检查
+
+脚本需要 Python 3.11+ 及其标准库 `tomllib`，配置生效时需要 `zsh`：
+
+```bash
+python3 -c 'import sys, tomllib; assert sys.version_info >= (3, 11); print(sys.version)'
+command -v zsh >/dev/null || echo "missing: zsh"
+```
+
+Ubuntu 24.04 及更新版本可安装：
+
+```bash
+sudo apt install python3 zsh
+```
+
+较旧发行版的 `python3` 可能低于 3.11，安装后仍应执行上面的检查命令确认。
+
 ## 1. 🔧 参数说明
 
 | 参数 | 说明 | 默认值 |
