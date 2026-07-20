@@ -114,3 +114,5 @@ w32tm /stripchart /computer:ntp1.aliyun.com /samples:5 /dataonly
 - `-MaxCorrectionSeconds` 默认是 `300`，用于避免 DNS 污染、错误服务器或解析 bug 导致系统时间被大幅改错。
 - 计划任务使用 `SYSTEM` 账户运行，不依赖当前用户登录后的 UAC。
 - 脚本优先使用 IPv4 地址，避免部分网络环境下 IPv6 NTP 超时影响结果。
+- 响应必须来自请求的服务器端点，并通过 NTP mode、版本、stratum、同步状态和 originate timestamp 校验后才会用于校时。
+- 安装计划任务时会持久化 `Servers`、超时、最大修正值和日志路径等同步参数。

@@ -59,12 +59,40 @@ function Write-SyncLog {
     param([string] $Message)
 
     $directory = Split-Path -Parent $LogPath
-    if (-not (Test-Path -LiteralPath $directory)) {
+    if ($directory -and -not (Test-Path -LiteralPath $directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'
     Add-Content -LiteralPath $LogPath -Value "[$timestamp] $Message"
+}
+
+function ConvertTo-PowerShellLiteral {
+    param([string] $Value)
+
+    "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Remove-SyncTask {
+    param(
+        [string] $Name,
+        [switch] $Quiet
+    )
+
+    & schtasks.exe /Query /TN $Name 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    & schtasks.exe /Delete /TN $Name /F 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to remove task: $Name"
+    }
+
+    if (-not $Quiet) {
+        Write-Host "Removed task: $Name"
+    }
+    return $true
 }
 
 function Get-PowerShellPath {
@@ -92,24 +120,45 @@ function Install-SyncTasks {
     }
 
     $shellPath = Get-PowerShellPath
-    $taskCommand = "`"$shellPath`" -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+    $serverLiterals = @($Servers | ForEach-Object { ConvertTo-PowerShellLiteral $_ })
+    $scriptLiteral = ConvertTo-PowerShellLiteral $scriptPath
+    $logLiteral = ConvertTo-PowerShellLiteral $LogPath
+    $maxCorrection = $MaxCorrectionSeconds.ToString([Globalization.CultureInfo]::InvariantCulture)
+    $invocation = "& $scriptLiteral -Servers @($($serverLiterals -join ', ')) " +
+        "-TimeoutMilliseconds $TimeoutMilliseconds -MaxCorrectionSeconds $maxCorrection -LogPath $logLiteral"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($invocation))
+    $taskCommand = "`"$shellPath`" -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
 
-    & schtasks.exe /Delete /TN $TaskName /F 2>$null
-    & schtasks.exe /Delete /TN $StartupTaskName /F 2>$null
+    [void] (Remove-SyncTask -Name $TaskName -Quiet)
+    [void] (Remove-SyncTask -Name $StartupTaskName -Quiet)
 
-    & schtasks.exe /Create /TN $TaskName /SC MINUTE /MO $IntervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskCommand /F
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create task: $TaskName"
-    }
+    $createdTasks = @()
+    try {
+        & schtasks.exe /Create /TN $TaskName /SC MINUTE /MO $IntervalMinutes /RU SYSTEM /RL HIGHEST /TR $taskCommand /F
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create task: $TaskName"
+        }
+        $createdTasks += $TaskName
 
-    & schtasks.exe /Create /TN $StartupTaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /DELAY 0000:45 /TR $taskCommand /F
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create task: $StartupTaskName"
-    }
+        & schtasks.exe /Create /TN $StartupTaskName /SC ONSTART /RU SYSTEM /RL HIGHEST /DELAY 0000:45 /TR $taskCommand /F
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create task: $StartupTaskName"
+        }
+        $createdTasks += $StartupTaskName
 
-    & schtasks.exe /Run /TN $TaskName
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start task: $TaskName"
+        & schtasks.exe /Run /TN $TaskName
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to start task: $TaskName"
+        }
+    } catch {
+        foreach ($CreatedTask in $createdTasks) {
+            try {
+                [void] (Remove-SyncTask -Name $CreatedTask -Quiet)
+            } catch {
+                Write-Warning $_.Exception.Message
+            }
+        }
+        throw
     }
 
     Write-Host "Installed task: $TaskName"
@@ -122,10 +171,11 @@ function Uninstall-SyncTasks {
         throw 'Uninstalling scheduled tasks requires Administrator.'
     }
 
-    & schtasks.exe /Delete /TN $TaskName /F 2>$null
-    & schtasks.exe /Delete /TN $StartupTaskName /F 2>$null
-    Write-Host "Removed task if present: $TaskName"
-    Write-Host "Removed task if present: $StartupTaskName"
+    foreach ($Name in @($TaskName, $StartupTaskName)) {
+        if (-not (Remove-SyncTask -Name $Name)) {
+            Write-Host "Task not present: $Name"
+        }
+    }
 }
 
 function Get-NtpTime {
@@ -149,9 +199,22 @@ function Get-NtpTime {
             throw "No IPv4 address resolved for $Server"
         }
 
-        $endpoint = [System.Net.IPEndPoint]::new($addresses[0], 123)
         $sendTimeUtc = [DateTime]::UtcNow
-        [void] $udp.Send($request, $request.Length, $endpoint)
+        $ntpEpoch = [DateTime]::new(1900, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+        $sendSecondsTotal = ($sendTimeUtc - $ntpEpoch).TotalSeconds
+        $sendWholeSeconds = [math]::Floor($sendSecondsTotal)
+        $sendSeconds = [uint32]($sendWholeSeconds % 4294967296.0)
+        $sendFraction = [uint32][math]::Floor(($sendSecondsTotal - $sendWholeSeconds) * 4294967296.0)
+        $sendSecondsBytes = [BitConverter]::GetBytes($sendSeconds)
+        $sendFractionBytes = [BitConverter]::GetBytes($sendFraction)
+        [Array]::Reverse($sendSecondsBytes)
+        [Array]::Reverse($sendFractionBytes)
+        [Array]::Copy($sendSecondsBytes, 0, $request, 40, 4)
+        [Array]::Copy($sendFractionBytes, 0, $request, 44, 4)
+
+        $endpoint = [System.Net.IPEndPoint]::new($addresses[0], 123)
+        $udp.Connect($endpoint)
+        [void] $udp.Send($request, $request.Length)
 
         $remote = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
         $response = $udp.Receive([ref] $remote)
@@ -159,6 +222,44 @@ function Get-NtpTime {
 
         if ($response.Length -lt 48) {
             throw "Short NTP response from $Server ($($response.Length) bytes)"
+        }
+
+        if (-not $remote.Address.Equals($endpoint.Address) -or $remote.Port -ne 123) {
+            throw "NTP response came from unexpected endpoint $remote"
+        }
+
+        $leap = ($response[0] -shr 6) -band 0x03
+        $version = ($response[0] -shr 3) -band 0x07
+        $mode = $response[0] -band 0x07
+        $stratum = [int] $response[1]
+        if ($leap -eq 3) {
+            throw "NTP server $Server reports an unsynchronized clock"
+        }
+        if ($version -lt 3 -or $version -gt 4) {
+            throw "Unsupported NTP version from $Server`: $version"
+        }
+        if ($mode -ne 4) {
+            throw "Invalid NTP response mode from $Server`: $mode"
+        }
+        if ($stratum -lt 1 -or $stratum -gt 15) {
+            throw "Invalid NTP stratum from $Server`: $stratum"
+        }
+
+        for ($Index = 0; $Index -lt 8; $Index++) {
+            if ($response[24 + $Index] -ne $request[40 + $Index]) {
+                throw "NTP originate timestamp mismatch from $Server"
+            }
+        }
+
+        $transmitTimestampNonzero = $false
+        for ($Index = 40; $Index -lt 48; $Index++) {
+            if ($response[$Index] -ne 0) {
+                $transmitTimestampNonzero = $true
+                break
+            }
+        }
+        if (-not $transmitTimestampNonzero) {
+            throw "NTP response from $Server has an empty transmit timestamp"
         }
 
         $secondsBytes = $response[40..43]
@@ -170,10 +271,16 @@ function Get-NtpTime {
         $fraction = [BitConverter]::ToUInt32($fractionBytes, 0)
         $milliseconds = ($fraction * 1000.0) / 0x100000000L
 
-        $ntpEpoch = [DateTime]::new(1900, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
-        $serverTimeUtc = $ntpEpoch.AddSeconds($seconds).AddMilliseconds($milliseconds)
+        $eraSeconds = 4294967296.0
+        $receiveSeconds = ($receiveTimeUtc - $ntpEpoch).TotalSeconds
+        $era = [math]::Round(($receiveSeconds - [double]$seconds) / $eraSeconds)
+        $fullSeconds = [double]$seconds + ($era * $eraSeconds)
+        $serverTimeUtc = $ntpEpoch.AddSeconds($fullSeconds).AddMilliseconds($milliseconds)
 
         $roundTrip = $receiveTimeUtc - $sendTimeUtc
+        if ($roundTrip.TotalMilliseconds -lt 0) {
+            throw 'System clock changed while collecting the NTP sample'
+        }
         $correctedUtc = $serverTimeUtc.AddTicks([int64]($roundTrip.Ticks / 2))
 
         [pscustomobject]@{
@@ -268,6 +375,28 @@ function Sync-TimeViaSntp {
 if ($Help) {
     Show-Usage
     exit 0
+}
+
+if ($InstallTask -and $UninstallTask) {
+    throw '-InstallTask and -UninstallTask cannot be used together.'
+}
+if (-not $Servers -or @($Servers | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -ne $Servers.Count) {
+    throw '-Servers must contain at least one non-empty server name.'
+}
+if ($TimeoutMilliseconds -le 0) {
+    throw '-TimeoutMilliseconds must be a positive integer.'
+}
+if ($MaxCorrectionSeconds -le 0) {
+    throw '-MaxCorrectionSeconds must be positive.'
+}
+if ($IntervalMinutes -lt 1 -or $IntervalMinutes -gt 1439) {
+    throw '-IntervalMinutes must be between 1 and 1439.'
+}
+if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    throw '-LogPath must not be empty.'
+}
+if ([string]::IsNullOrWhiteSpace($TaskName) -or [string]::IsNullOrWhiteSpace($StartupTaskName)) {
+    throw 'Scheduled task names must not be empty.'
 }
 
 if ($InstallTask) {

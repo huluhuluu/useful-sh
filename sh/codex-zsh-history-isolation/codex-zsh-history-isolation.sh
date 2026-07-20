@@ -33,6 +33,7 @@ EOF
 CODEX_DIR="${HOME}/.codex"
 HISTFILE_PATH=""
 ZDOTDIR_PATH=""
+MAIN_HISTFILE="${HISTFILE:-${HOME}/.zsh_history}"
 CODEX_HISTORY_PERSISTENCE="none"
 CHECK_ONLY=0
 
@@ -145,6 +146,7 @@ ZSHENV_FILE="${ZDOTDIR_PATH}/.zshenv"
 CODEX_HISTORY_FILE="${CODEX_DIR}/history.jsonl"
 
 CHECK_OUTPUT="$(python3 - "$CONFIG_FILE" "$HISTFILE_PATH" "$ZDOTDIR_PATH" "$ZSHENV_FILE" "$CODEX_HISTORY_PERSISTENCE" <<'PY'
+import shlex
 import sys
 from pathlib import Path
 
@@ -172,7 +174,7 @@ if config_path.exists():
 history_table = data.get("history")
 shell_env = data.get("shell_environment_policy")
 shell_env_set = shell_env.get("set") if isinstance(shell_env, dict) else None
-zshenv_expected = f"HISTFILE={histfile}\n"
+zshenv_expected = f"HISTFILE={shlex.quote(histfile)}\n"
 zshenv_ok = zshenv_path.exists() and zshenv_path.read_text(encoding="utf-8") == zshenv_expected
 
 print_line("CONFIG_EXISTS", "1" if config_path.exists() else "0")
@@ -259,9 +261,16 @@ if [ "$CONFIG_EXISTS" -eq 1 ]; then
   echo "backed up existing config to $BACKUP_FILE"
 fi
 
-cat >"$ZSHENV_FILE" <<EOF
-HISTFILE=${HISTFILE_PATH}
-EOF
+python3 - "$ZSHENV_FILE" "$HISTFILE_PATH" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    f"HISTFILE={shlex.quote(sys.argv[2])}\n",
+    encoding="utf-8",
+)
+PY
 
 python3 - "$CONFIG_FILE" "$HISTFILE_PATH" "$ZDOTDIR_PATH" "$CODEX_HISTORY_PERSISTENCE" <<'PY'
 import json
@@ -393,4 +402,9 @@ echo "  2. start Codex again"
 echo "  3. run this through Codex:"
 echo "     echo \"hello this is a codex test\""
 echo "  4. verify it is absent from your main zsh history:"
-echo "     grep -n 'hello this is a codex test' \"$HOME/.zsh_history\""
+python3 - "$MAIN_HISTFILE" <<'PY'
+import shlex
+import sys
+
+print("     grep -n 'hello this is a codex test' " + shlex.quote(sys.argv[1]))
+PY

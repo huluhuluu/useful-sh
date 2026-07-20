@@ -10,7 +10,6 @@ Creates or updates the clangd project configuration at DIR/.clangd.
 
 Options:
   --path DIR         Target project directory (default: current directory)
-  --ndk-path DIR     Override Android NDK directory instead of auto-detect
   --compdb-dir DIR   Compilation database directory, relative to the project
                      root or absolute (default: build)
   --compile-commands-dir DIR
@@ -20,7 +19,6 @@ EOF
 }
 
 PROJECT_DIR="."
-NDK_ROOT_OVERRIDE=""
 COMPILE_COMMANDS_DIR="build"
 
 while [ "$#" -gt 0 ]; do
@@ -28,11 +26,6 @@ while [ "$#" -gt 0 ]; do
     --path)
       [ "$#" -ge 2 ] || { echo "missing value for $1" >&2; exit 1; }
       PROJECT_DIR=$2
-      shift 2
-      ;;
-    --ndk-path)
-      [ "$#" -ge 2 ] || { echo "missing value for --ndk-path" >&2; exit 1; }
-      NDK_ROOT_OVERRIDE=$2
       shift 2
       ;;
     --compdb-dir|--compile-commands-dir)
@@ -71,8 +64,6 @@ PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 print_install_hint() {
   case "$1" in
     python3) package="python3" ;;
-    find) package="findutils" ;;
-    sort) package="coreutils" ;;
     *) return ;;
   esac
   printf 'install on Ubuntu/Debian: sudo apt install %s\n' "$package" >&2
@@ -87,9 +78,7 @@ require_command() {
   }
 }
 
-for command_name in python3 find sort; do
-  require_command "$command_name"
-done
+require_command python3
 
 if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
   echo "Python 3.9 or newer is required" >&2
@@ -97,65 +86,7 @@ if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) el
   exit 1
 fi
 
-detect_ndk_root() {
-  for var_name in ANDROID_NDK ANDROID_NDK_ROOT ANDROID_NDK_HOME NDK_ROOT NDK_HOME; do
-    eval "value=\${$var_name-}"
-    if [ -n "${value}" ] && [ -d "$value" ]; then
-      printf '%s\n' "$value"
-      return 0
-    fi
-  done
-
-  for sdk_var in ANDROID_SDK_ROOT ANDROID_HOME; do
-    eval "sdk_root=\${$sdk_var-}"
-    if [ -n "${sdk_root}" ] && [ -d "$sdk_root/ndk" ]; then
-      candidate="$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
-      if [ -n "${candidate}" ] && [ -d "$candidate" ]; then
-        printf '%s\n' "$candidate"
-        return 0
-      fi
-    fi
-    if [ -n "${sdk_root}" ] && [ -d "$sdk_root/ndk-bundle" ]; then
-      printf '%s\n' "$sdk_root/ndk-bundle"
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-if [ -n "$NDK_ROOT_OVERRIDE" ]; then
-  NDK_ROOT=$NDK_ROOT_OVERRIDE
-else
-  NDK_ROOT="$(detect_ndk_root || true)"
-fi
-
-[ -n "$NDK_ROOT" ] || {
-  echo "unable to detect Android NDK path; pass --ndk-path DIR" >&2
-  exit 1
-}
-
-PREBUILT_ROOT="$NDK_ROOT/toolchains/llvm/prebuilt"
-[ -d "$PREBUILT_ROOT" ] || {
-  echo "invalid Android NDK layout: missing directory $PREBUILT_ROOT" >&2
-  exit 1
-}
-
-CLANGD_BIN_FILE="$(find "$PREBUILT_ROOT" -type f -path '*/bin/clangd' 2>/dev/null | sort | head -n 1)"
-[ -n "$CLANGD_BIN_FILE" ] || {
-  echo "clangd not found under NDK: $NDK_ROOT" >&2
-  exit 1
-}
-
-PREBUILT_BIN_DIR="$(dirname "$CLANGD_BIN_FILE")"
-CLANGD_PATH="$PREBUILT_BIN_DIR/clangd"
-QUERY_DRIVER="$PREBUILT_BIN_DIR/clang*"
 PROJECT_CONFIG_FILE="$PROJECT_DIR/.clangd"
-
-[ -x "$CLANGD_PATH" ] || {
-  echo "clangd is not executable: $CLANGD_PATH" >&2
-  exit 1
-}
 
 if [ -e "$PROJECT_CONFIG_FILE" ] && [ ! -w "$PROJECT_CONFIG_FILE" ]; then
   echo "project clangd file is not writable: $PROJECT_CONFIG_FILE" >&2
@@ -213,8 +144,6 @@ lines = replace_top_level_section(
 project_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 PY
 
-echo "ndk root:       $NDK_ROOT"
-echo "clangd path:    $CLANGD_PATH"
 echo "clangd config:  $PROJECT_CONFIG_FILE"
 echo "compile db dir: $COMPILE_COMMANDS_DIR"
 

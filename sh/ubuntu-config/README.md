@@ -46,6 +46,7 @@ apt-get install sudo wget curl
 | `--cuda-home DIR` | 往 `~/.zshrc` 追加 `CUDA` 的 `PATH` 和 `LD_LIBRARY_PATH` | 不配置 |
 | `--miniforge-prefix DIR` | 自定义 `Miniforge` 安装目录 | `~/miniforge3` |
 | `--miniforge-url URL` | 自定义 `Miniforge` 安装脚本地址 | 按架构自动推断 |
+| `--miniforge-sha256 HEX` | 自定义安装脚本的 SHA-256；使用 `--miniforge-url` 时必须同时提供 | 固定版本内置值 |
 | `--all` | 同时执行 `base`、`dev`、`shell`、`miniforge` 四类初始化 | 关闭 |
 | `--check` | 只打印计划动作，不实际执行 | 关闭 |
 | `-h, --help` | 显示帮助信息并退出 | - |
@@ -166,6 +167,6 @@ export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
 
 - 这个脚本会改 `~/.tmux.conf`、`~/.zshrc`、`~/.bash_profile`
 - `--install-shell` 需要能访问 `gitee.com` 和 `github.com`，因为要克隆 `oh-my-zsh`、插件和 `fzf`
-- `--install-miniforge` 需要能访问 `mirror.nju.edu.cn`
+- `--install-miniforge` 默认下载并校验固定版本的 GitHub release；使用自定义下载地址时必须同时提供 SHA-256
 - 如果你只想装包，不想改 shell 配置，直接加 `--skip-shell-config`
 - `CUDA` 配置只在你明确传 `--cuda-home` 时才会写入

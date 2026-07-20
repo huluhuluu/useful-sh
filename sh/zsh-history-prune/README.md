@@ -29,6 +29,7 @@ sudo apt install mawk coreutils
 | `--top N` | 额外保留出现次数最高的前 `N` 条完整命令行。和 `--min-count` 取并集 | `0` |
 | `--keep-recent N` | 永远保留最近 `N` 条历史记录，不参与筛选 | `500` |
 | `--backup-dir DIR` | `--apply` 时保存备份的目录 | `~/.zsh_history.backups` |
+| `--show-commands` | 在预览中显示完整命令文本；可能包含敏感参数 | 关闭 |
 | `--apply` | 真的改写历史文件。默认只预览，不写回 | 关闭 |
 | `-h, --help` | 显示帮助信息并退出 | - |
 
@@ -38,7 +39,8 @@ sudo apt install mawk coreutils
 - 再保留 `--top` 和 `--min-count` 命中的命令
 - 同时保留最近 `--keep-recent` 条记录
 - 预览模式只输出结果，不会修改原文件
-- `--apply` 会先写备份，再覆盖历史文件
+- 默认不输出命令正文；只有显式传入 `--show-commands` 才显示
+- `--apply` 会先写备份，再通过同目录临时文件原子替换历史文件
 
 ## 3. 🚀 常用命令
 
@@ -54,3 +56,5 @@ sudo apt install mawk coreutils
 - 处理对象必须存在且非空
 - `--apply` 之前会自动创建备份目录
 - `--top` 和 `--min-count` 可以同时使用，脚本会保留两者的并集
+- apply 期间如果历史文件发生变化，脚本会拒绝覆盖
+- 检测到多行 zsh extended history 记录时会退出，不会按物理行错误清理

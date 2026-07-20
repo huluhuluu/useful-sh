@@ -138,17 +138,19 @@ hash_file() {
   algo=$1
   path=$2
 
+  hash_path=$path
+  case "$hash_path" in
+    -*) hash_path="./$hash_path" ;;
+  esac
+
   case "$algo" in
-    auto)
-      hash_file "$(pick_auto_algo)" "$path"
-      ;;
     md5)
       if has_command md5sum; then
-        md5sum "$path" | awk '{print tolower($1)}'
+        md5sum "$hash_path" | awk '{print tolower($1)}'
       elif has_command md5; then
-        md5 -q "$path" | awk '{print tolower($1)}'
+        md5 -q "$hash_path" | awk '{print tolower($1)}'
       elif has_command openssl; then
-        openssl dgst -md5 -r "$path" | awk '{print tolower($1)}'
+        openssl dgst -md5 -r "$hash_path" | awk '{print tolower($1)}'
       else
         echo "md5 requires one of: md5sum, md5, openssl" >&2
         print_install_hint core-hash
@@ -157,11 +159,11 @@ hash_file() {
       ;;
     sha1)
       if has_command sha1sum; then
-        sha1sum "$path" | awk '{print tolower($1)}'
+        sha1sum "$hash_path" | awk '{print tolower($1)}'
       elif has_command shasum; then
-        shasum -a 1 "$path" | awk '{print tolower($1)}'
+        shasum -a 1 "$hash_path" | awk '{print tolower($1)}'
       elif has_command openssl; then
-        openssl dgst -sha1 -r "$path" | awk '{print tolower($1)}'
+        openssl dgst -sha1 -r "$hash_path" | awk '{print tolower($1)}'
       else
         echo "sha1 requires one of: sha1sum, shasum, openssl" >&2
         print_install_hint core-hash
@@ -170,11 +172,11 @@ hash_file() {
       ;;
     sha256)
       if has_command sha256sum; then
-        sha256sum "$path" | awk '{print tolower($1)}'
+        sha256sum "$hash_path" | awk '{print tolower($1)}'
       elif has_command shasum; then
-        shasum -a 256 "$path" | awk '{print tolower($1)}'
+        shasum -a 256 "$hash_path" | awk '{print tolower($1)}'
       elif has_command openssl; then
-        openssl dgst -sha256 -r "$path" | awk '{print tolower($1)}'
+        openssl dgst -sha256 -r "$hash_path" | awk '{print tolower($1)}'
       else
         echo "sha256 requires one of: sha256sum, shasum, openssl" >&2
         print_install_hint core-hash
@@ -183,11 +185,11 @@ hash_file() {
       ;;
     sha512)
       if has_command sha512sum; then
-        sha512sum "$path" | awk '{print tolower($1)}'
+        sha512sum "$hash_path" | awk '{print tolower($1)}'
       elif has_command shasum; then
-        shasum -a 512 "$path" | awk '{print tolower($1)}'
+        shasum -a 512 "$hash_path" | awk '{print tolower($1)}'
       elif has_command openssl; then
-        openssl dgst -sha512 -r "$path" | awk '{print tolower($1)}'
+        openssl dgst -sha512 -r "$hash_path" | awk '{print tolower($1)}'
       else
         echo "sha512 requires one of: sha512sum, shasum, openssl" >&2
         print_install_hint core-hash
@@ -196,7 +198,7 @@ hash_file() {
       ;;
     blake3)
       if has_command b3sum; then
-        b3sum "$path" | awk '{print tolower($1)}'
+        b3sum "$hash_path" | awk '{print tolower($1)}'
       else
         echo "blake3 requires: b3sum" >&2
         print_install_hint b3sum
@@ -205,7 +207,7 @@ hash_file() {
       ;;
     xxh64)
       if has_command xxhsum; then
-        xxhsum -H1 "$path" | awk '{print tolower($1)}'
+        xxhsum -H1 "$hash_path" | awk '{print tolower($1)}'
       else
         echo "xxh64 requires: xxhsum" >&2
         print_install_hint xxhsum

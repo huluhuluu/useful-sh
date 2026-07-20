@@ -15,7 +15,7 @@ Options:
   --relay-port PORT    Extra forwarded relay port. Can be repeated (default: 45058)
   --relay-ports PORTS  Comma-separated extra forwarded relay ports
   --ssh-host HOST      SSH host used by reverse tunnel. Required unless --no-ssh is set
-  --ssh-bind ADDR      Remote bind address for ssh -R (default: 0.0.0.0)
+  --ssh-bind ADDR      Remote bind address for ssh -R (default: 127.0.0.1)
   --device SERIAL      USB adb serial to use. Auto-detects the first usb: device by default
   --interval SEC       Health check interval in seconds (default: 5)
   --once               Repair adb tcpip and adb forward once, then exit unless SSH is enabled
@@ -38,7 +38,7 @@ RELAY_PORTS=45058
 RELAY_PORTS_SET=0
 SINGLE_TARGET_ARG_SET=0
 SSH_HOST=""
-SSH_BIND=0.0.0.0
+SSH_BIND=127.0.0.1
 USB_SERIAL=""
 INTERVAL=5
 ONCE=0
@@ -162,10 +162,11 @@ port_list_to_words() {
 
 validate_port_list() {
   list=$1
+  ports=$(port_list_to_words "$list")
 
-  [ -n "$list" ] || return 1
+  [ -n "$ports" ] || return 1
 
-  for port in $(port_list_to_words "$list"); do
+  for port in $ports; do
     is_port "$port" || return 1
   done
 }
@@ -354,6 +355,20 @@ if [ "$NO_SSH" -eq 0 ]; then
   require_command ssh
 fi
 
+cleanup() {
+  if [ -n "$SSH_PID" ] && kill -0 "$SSH_PID" 2>/dev/null; then
+    log "stopping ssh tunnel pid=$SSH_PID"
+    kill "$SSH_PID" 2>/dev/null || true
+    wait "$SSH_PID" 2>/dev/null || true
+  fi
+  [ -n "$CONFIG_RECORDS" ] && rm -f "$CONFIG_RECORDS"
+  [ -n "$SSH_PORTS" ] && rm -f "$SSH_PORTS"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 CONFIG_RECORDS=$(mktemp)
 SSH_PORTS=$(mktemp)
 
@@ -372,19 +387,6 @@ TARGET_COUNT=$(awk 'NF { count++ } END { print count + 0 }' "$CONFIG_RECORDS")
 SSH_PORT_LIST=$(awk 'BEGIN { sep = "" } { printf "%s%s", sep, $0; sep = "," } END { print "" }' "$SSH_PORTS")
 
 log "adb relay guard started: mode=$MODE targets=$TARGET_COUNT ports=$SSH_PORT_LIST ssh_host=${SSH_HOST:-none} ssh_bind=$SSH_BIND interval=${INTERVAL}s once=$ONCE no_ssh=$NO_SSH verbose=$VERBOSE"
-
-cleanup() {
-  if [ -n "$SSH_PID" ] && kill -0 "$SSH_PID" 2>/dev/null; then
-    log "stopping ssh tunnel pid=$SSH_PID"
-    kill "$SSH_PID" 2>/dev/null || true
-    wait "$SSH_PID" 2>/dev/null || true
-  fi
-  [ -n "$CONFIG_RECORDS" ] && rm -f "$CONFIG_RECORDS"
-  [ -n "$SSH_PORTS" ] && rm -f "$SSH_PORTS"
-}
-
-trap cleanup EXIT
-trap 'cleanup; exit 130' INT TERM
 
 detect_usb_serial() {
   adb devices -l | awk '

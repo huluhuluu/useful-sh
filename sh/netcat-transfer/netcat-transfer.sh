@@ -245,6 +245,7 @@ send_stream() {
 receive_stream() {
   local protocol compression_field size_field extra
   local sender_compression sender_size selected_decompression
+  local staging_dir transfer_status
 
   if ! IFS=' ' read -r protocol compression_field size_field extra; then
     echo "connection probe received; resuming transfer listener"
@@ -295,9 +296,33 @@ receive_stream() {
   esac
 
   echo "stream compression: $sender_compression"
-  decompress_stream "$selected_decompression" |
+  staging_dir="$(mktemp -d "$TARGET_PATH/.netcat-transfer.XXXXXX")" || {
+    echo "transfer error: unable to create destination staging directory" >&2
+    return 2
+  }
+  trap 'rm -rf -- "$staging_dir"' EXIT INT TERM
+
+  if decompress_stream "$selected_decompression" |
     progress_stream "$sender_size" "recv(raw)" |
-    tar -xf - -C "$TARGET_PATH"
+    tar -xf - -C "$staging_dir"; then
+    :
+  else
+    transfer_status=$?
+    echo "transfer error: incomplete stream discarded before destination update" >&2
+    rm -rf -- "$staging_dir"
+    trap - EXIT INT TERM
+    return "$transfer_status"
+  fi
+
+  if ! cp -a "$staging_dir"/. "$TARGET_PATH"/; then
+    echo "transfer error: verified stream could not be merged into destination" >&2
+    rm -rf -- "$staging_dir"
+    trap - EXIT INT TERM
+    return 2
+  fi
+
+  rm -rf -- "$staging_dir"
+  trap - EXIT INT TERM
 }
 
 if (( $# == 0 )); then
@@ -453,7 +478,6 @@ while (( $# > 0 )); do
         exit 1
       }
       PROGRESS_MODE="off"
-      SHOW_PROGRESS=0
       shift
       ;;
     -h|--help)
@@ -478,7 +502,6 @@ while (( $# > 0 )); do
   esac
 done
 
-require_command tar
 require_command nc
 
 if [[ "$MODE" != "test" ]]; then
@@ -518,6 +541,7 @@ fi
 
 case "$MODE" in
   send)
+    require_command tar
     [[ -n "$HOST" ]] || {
       echo "--host is required for send mode" >&2
       exit 1
@@ -582,6 +606,9 @@ case "$MODE" in
     fi
     ;;
   recv)
+    for command_name in tar mktemp cp rm; do
+      require_command "$command_name"
+    done
     [[ -n "$TARGET_PATH" ]] || {
       echo "--path is required for recv mode" >&2
       exit 1
@@ -613,11 +640,17 @@ case "$MODE" in
         echo "receive completed successfully: $TARGET_PATH"
         break
       else
-        receive_status=$?
+        pipeline_status=("${PIPESTATUS[@]}")
+        listen_status=${pipeline_status[0]}
+        receive_status=${pipeline_status[1]}
+        if (( listen_status != 0 )); then
+          echo "receive failed: netcat listener exited with status $listen_status" >&2
+          exit "$listen_status"
+        fi
         if (( receive_status == 10 )); then
           continue
         fi
-        echo "receive failed: nothing was extracted successfully" >&2
+        echo "receive failed: incomplete stream was not applied to the destination" >&2
         exit "$receive_status"
       fi
     done

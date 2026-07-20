@@ -7,7 +7,7 @@ Usage:
   ./zsh-history-prune.sh [options]
 
 Default behavior:
-  Preview which full command lines are considered common and how many history lines would be kept.
+  Preview how many history lines would be kept without printing command text.
   Use --apply to rewrite the history file.
 
 Options:
@@ -16,6 +16,7 @@ Options:
   --top N             also keep the top N most-used full command lines (default: 0)
   --keep-recent N     always keep the most recent N history lines (default: 500)
   --backup-dir DIR    backup directory for --apply (default: ~/.zsh_history.backups)
+  --show-commands     Print selected command text in preview output
   --apply             rewrite the history file after creating a backup
   -h, --help          show this help
 
@@ -34,6 +35,8 @@ TOP_N=0
 KEEP_RECENT=500
 BACKUP_DIR="$HOME/.zsh_history.backups"
 APPLY=0
+SHOW_COMMANDS=0
+REWRITE_FILE=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -64,6 +67,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --apply)
       APPLY=1
+      shift
+      ;;
+    --show-commands)
+      SHOW_COMMANDS=1
       shift
       ;;
     -h|--help)
@@ -125,6 +132,9 @@ done
 
 TMPDIR_PATH="$(mktemp -d)"
 cleanup() {
+  if [ -n "$REWRITE_FILE" ]; then
+    rm -f "$REWRITE_FILE"
+  fi
   rm -rf "$TMPDIR_PATH"
 }
 trap cleanup EXIT INT TERM
@@ -133,6 +143,26 @@ COUNTS_FILE="$TMPDIR_PATH/counts.tsv"
 KEEP_CMDS_FILE="$TMPDIR_PATH/keep_cmds.txt"
 FILTERED_FILE="$TMPDIR_PATH/filtered_history"
 SUMMARY_FILE="$TMPDIR_PATH/summary.env"
+SOURCE_FILE="$TMPDIR_PATH/source_history"
+
+cp "$HISTFILE_PATH" "$SOURCE_FILE"
+
+if awk '
+  /^: [0-9]+:[0-9]+;/ {
+    extended = 1
+    next
+  }
+  extended {
+    multiline = 1
+    exit
+  }
+  END {
+    exit(multiline ? 0 : 1)
+  }
+' "$SOURCE_FILE"; then
+  echo "multiline zsh history records are not supported; history was not modified" >&2
+  exit 1
+fi
 
 awk '
 function trim(s) {
@@ -162,9 +192,10 @@ END {
     printf "%d\t%s\n", counts[line], line
   }
 }
-' "$HISTFILE_PATH" | sort -t '	' -k1,1nr -k2,2 > "$COUNTS_FILE"
+' "$SOURCE_FILE" | sort -t '	' -k1,1nr -k2,2 > "$COUNTS_FILE"
 
 : > "$KEEP_CMDS_FILE"
+: > "$FILTERED_FILE"
 
 if [ "$TOP_N" -gt 0 ]; then
   awk -F '	' -v top="$TOP_N" 'NR <= top { print $2 }' "$COUNTS_FILE" >> "$KEEP_CMDS_FILE"
@@ -229,20 +260,33 @@ END {
   print "KEPT_LINES=" kept >> summary
   print "REMOVED_LINES=" (total - kept) >> summary
 }
-' "$HISTFILE_PATH"
+' "$SOURCE_FILE"
 
-. "$SUMMARY_FILE"
+TOTAL_LINES=0
+KEPT_LINES=0
+REMOVED_LINES=0
+while IFS='=' read -r key value; do
+  case "$key" in
+    TOTAL_LINES) TOTAL_LINES=$value ;;
+    KEPT_LINES) KEPT_LINES=$value ;;
+    REMOVED_LINES) REMOVED_LINES=$value ;;
+  esac
+done < "$SUMMARY_FILE"
 
 echo "history file:  $HISTFILE_PATH"
 echo "min count:     $MIN_COUNT"
 echo "top lines:     $TOP_N"
 echo "keep recent:   $KEEP_RECENT"
-echo
-echo "top full command lines that will be kept:"
-if [ -s "$COUNTS_FILE" ]; then
-  awk -F '	' 'NR <= 20 { printf "  [%s] %s\n", $1, $2 }' "$COUNTS_FILE"
+if [ "$SHOW_COMMANDS" -eq 1 ]; then
+  echo
+  echo "top command lines by frequency (not necessarily retained):"
+  if [ -s "$COUNTS_FILE" ]; then
+    awk -F '	' 'NR <= 20 { printf "  [%s] %s\n", $1, $2 }' "$COUNTS_FILE"
+  else
+    echo "  no command lines found"
+  fi
 else
-  echo "  no command lines found"
+  echo "command text:    hidden (use --show-commands to display)"
 fi
 echo
 echo "line summary:"
@@ -256,7 +300,12 @@ if [ "$APPLY" -eq 0 ]; then
   exit 0
 fi
 
-if cmp -s "$HISTFILE_PATH" "$FILTERED_FILE"; then
+if ! cmp -s "$SOURCE_FILE" "$HISTFILE_PATH"; then
+  echo "history changed while it was being analyzed; refusing to overwrite it" >&2
+  exit 1
+fi
+
+if cmp -s "$SOURCE_FILE" "$FILTERED_FILE"; then
   echo
   echo "history already matches the filtered result. nothing to do."
   exit 0
@@ -265,8 +314,21 @@ fi
 mkdir -p "$BACKUP_DIR"
 TIMESTAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
 BACKUP_FILE="$BACKUP_DIR/$(basename "$HISTFILE_PATH").$TIMESTAMP.bak"
-cp "$HISTFILE_PATH" "$BACKUP_FILE"
-cp "$FILTERED_FILE" "$HISTFILE_PATH"
+cp "$SOURCE_FILE" "$BACKUP_FILE"
+
+history_dir=$(dirname "$HISTFILE_PATH")
+history_name=$(basename "$HISTFILE_PATH")
+REWRITE_FILE="$(mktemp "$history_dir/.${history_name}.rewrite.XXXXXX")"
+cp -p "$SOURCE_FILE" "$REWRITE_FILE"
+cp "$FILTERED_FILE" "$REWRITE_FILE"
+
+if ! cmp -s "$SOURCE_FILE" "$HISTFILE_PATH"; then
+  echo "history changed before the final write; refusing to overwrite it" >&2
+  exit 1
+fi
+
+mv -f "$REWRITE_FILE" "$HISTFILE_PATH"
+REWRITE_FILE=""
 
 echo
 echo "backup written to: $BACKUP_FILE"

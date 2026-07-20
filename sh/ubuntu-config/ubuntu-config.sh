@@ -24,6 +24,7 @@ Options:
   --cuda-home DIR        Append CUDA PATH and LD_LIBRARY_PATH exports for DIR
   --miniforge-prefix DIR Override Miniforge install prefix (default: ~/miniforge3)
   --miniforge-url URL    Override Miniforge installer URL
+  --miniforge-sha256 HEX SHA-256 for a custom Miniforge installer URL
   --all                  Enable base, dev, shell, and Miniforge setup
   --check                Print planned actions only
   -h, --help             Show this help
@@ -47,6 +48,8 @@ CONFIGURE_SHELL=1
 CUDA_HOME=""
 MINIFORGE_PREFIX="${HOME}/miniforge3"
 MINIFORGE_URL=""
+MINIFORGE_SHA256=""
+MINIFORGE_VERSION="26.3.2-3"
 
 BASE_PACKAGES="ca-certificates curl wget gzip netcat-openbsd pv tmux nvtop htop lsof aria2 pigz git-lfs git vim tree unzip zip net-tools ripgrep fd-find jq"
 DEV_PACKAGES="build-essential cmake ninja-build pkg-config gdb clang clangd python3-pip python3-venv"
@@ -102,6 +105,11 @@ while [ "$#" -gt 0 ]; do
     --miniforge-url)
       [ "$#" -ge 2 ] || { echo "missing value for --miniforge-url" >&2; exit 1; }
       MINIFORGE_URL=$2
+      shift 2
+      ;;
+    --miniforge-sha256)
+      [ "$#" -ge 2 ] || { echo "missing value for --miniforge-sha256" >&2; exit 1; }
+      MINIFORGE_SHA256=$2
       shift 2
       ;;
     --all)
@@ -184,28 +192,39 @@ case "$MINIFORGE_PREFIX" in
     ;;
 esac
 
-detect_miniforge_url() {
-  if [ -n "$MINIFORGE_URL" ]; then
-    printf '%s\n' "$MINIFORGE_URL"
-    return 0
+resolve_miniforge_asset() {
+  if [ -z "$MINIFORGE_URL" ]; then
+    arch="$(uname -m)"
+    case "$arch" in
+      x86_64|amd64)
+        suffix="x86_64"
+        default_sha256="848194851a98903134187fbb4ab50efe87b003e0c0f808f97644b7524a62bf2c"
+        ;;
+      aarch64|arm64)
+        suffix="aarch64"
+        default_sha256="2c113a69297e612b01ca0f320c22a3107a11f2ab9b573d79ac868a175945ce29"
+        ;;
+      *)
+        echo "unsupported architecture for Miniforge auto URL: $arch" >&2
+        echo "use --miniforge-url to provide an explicit installer URL" >&2
+        exit 1
+        ;;
+    esac
+
+    MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-Linux-${suffix}.sh"
+    MINIFORGE_SHA256=$default_sha256
   fi
 
-  arch="$(uname -m)"
-  case "$arch" in
-    x86_64|amd64)
-      suffix="x86_64"
-      ;;
-    aarch64|arm64)
-      suffix="aarch64"
-      ;;
-    *)
-      echo "unsupported architecture for Miniforge auto URL: $arch" >&2
-      echo "use --miniforge-url to provide an explicit installer URL" >&2
+  case "$MINIFORGE_SHA256" in
+    ''|*[!0-9a-f]*)
+      echo "--miniforge-sha256 must be 64 lowercase hexadecimal characters" >&2
       exit 1
       ;;
   esac
-
-  printf '%s\n' "https://mirror.nju.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-${suffix}.sh"
+  [ "${#MINIFORGE_SHA256}" -eq 64 ] || {
+    echo "--miniforge-sha256 must be 64 lowercase hexadecimal characters" >&2
+    exit 1
+  }
 }
 
 run_cmd() {
@@ -253,9 +272,14 @@ clone_repo_if_missing() {
   repo_url=$1
   target_dir=$2
 
-  if [ -d "$target_dir/.git" ] || [ -d "$target_dir" ]; then
+  if [ -e "$target_dir/.git" ]; then
     echo "reuse existing repo: $target_dir"
     return 0
+  fi
+
+  if [ -e "$target_dir" ]; then
+    echo "target exists but is not a Git repository: $target_dir" >&2
+    return 1
   fi
 
   parent_dir="$(dirname "$target_dir")"
@@ -365,29 +389,42 @@ ensure_conda_channel() {
 }
 
 install_miniforge() {
-  installer_url="$(detect_miniforge_url)"
-  installer_file="$(mktemp /tmp/miniforge-installer.XXXXXX.sh)"
   conda_sh="${MINIFORGE_PREFIX}/etc/profile.d/conda.sh"
   conda_bin="${MINIFORGE_PREFIX}/bin/conda"
   zshrc="${HOME}/.zshrc"
 
   if [ ! -x "$conda_bin" ]; then
-    download_file "$installer_url" "$installer_file"
+    command -v sha256sum >/dev/null 2>&1 || {
+      echo "sha256sum is required to verify the Miniforge installer" >&2
+      exit 1
+    }
+
+    installer_file="$(mktemp /tmp/miniforge-installer.XXXXXX.sh)"
+    trap 'rm -f "$installer_file"' EXIT INT TERM
+    download_file "$MINIFORGE_URL" "$installer_file"
+    checksum_output="$(sha256sum "$installer_file")"
+    installer_sha256=${checksum_output%% *}
+    [ "$installer_sha256" = "$MINIFORGE_SHA256" ] || {
+      echo "Miniforge installer checksum mismatch" >&2
+      echo "expected: $MINIFORGE_SHA256" >&2
+      echo "actual:   $installer_sha256" >&2
+      exit 1
+    }
     run_cmd bash "$installer_file" -b -p "$MINIFORGE_PREFIX"
+    rm -f "$installer_file"
+    trap - EXIT INT TERM
   else
     echo "reuse existing Miniforge install: $MINIFORGE_PREFIX"
   fi
-
-  rm -f "$installer_file"
 
   [ -f "$conda_sh" ] || {
     echo "conda.sh not found after Miniforge install: $conda_sh" >&2
     exit 1
   }
 
-  chmod u+x "$conda_sh"
   touch "$zshrc"
-  append_line_if_missing "$zshrc" "source ${conda_sh}"
+  quoted_conda_sh="$(printf '%s\n' "$conda_sh" | sed "s/'/'\\\\''/g")"
+  append_line_if_missing "$zshrc" "source '$quoted_conda_sh'"
 
   run_cmd "$conda_bin" init zsh
 
@@ -432,9 +469,14 @@ print_plan() {
     echo "shell packages:      $SHELL_PACKAGES"
   fi
   if [ "$INSTALL_MINIFORGE" -eq 1 ]; then
-    echo "miniforge url:       $(detect_miniforge_url)"
+    echo "miniforge url:       $MINIFORGE_URL"
+    echo "miniforge sha256:    $MINIFORGE_SHA256"
   fi
 }
+
+if [ "$INSTALL_MINIFORGE" -eq 1 ]; then
+  resolve_miniforge_asset
+fi
 
 print_plan
 

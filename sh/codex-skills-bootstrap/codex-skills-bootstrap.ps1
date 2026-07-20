@@ -13,6 +13,8 @@ $NoInstallCcSwitch = $false
 $DryRun = $false
 $ListDefaults = $false
 $Help = $false
+$CcSwitchVersion = 'v5.9.2'
+$CcSwitchWindowsX64Sha256 = 'cc3111f2566981debed594de1ce69379739a730fbe088b17e206709c34b7314d'
 
 $DefaultSkills = @(
     'find-skills',
@@ -171,24 +173,50 @@ function Install-CcSwitch {
     Write-Host 'installing cc-switch for Windows PowerShell...'
     Write-Host 'if GitHub is not reachable, set HTTPS_PROXY/HTTP_PROXY and rerun this script.'
 
-    $downloadUrl = 'https://github.com/SaladDay/cc-switch-cli/releases/latest/download/cc-switch-cli-windows-x64.zip'
-    $zipPath = Join-Path $env:TEMP 'cc-switch-cli.zip'
-    $extractPath = Join-Path $env:TEMP 'cc-switch-extract'
+    $asset = "cc-switch-cli-$CcSwitchVersion-windows-x64.zip"
+    $downloadUrl = "https://github.com/SaladDay/cc-switch-cli/releases/download/$CcSwitchVersion/$asset"
     $binPath = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
 
     if ($DryRun) {
-        Write-Host "+ Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath"
-        Write-Host "+ Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force"
-        Write-Host "+ Copy-Item $extractPath\cc-switch.exe -Destination $binPath -Force"
+        Write-Host "+ download $downloadUrl"
+        Write-Host "+ verify sha256 $CcSwitchWindowsX64Sha256"
+        Write-Host "+ install cc-switch.exe $binPath"
         return
     }
 
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
-    Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-    if (-not (Test-Path -LiteralPath $binPath)) {
-        New-Item -ItemType Directory -Path $binPath -Force | Out-Null
+    $tempPath = Join-Path ([IO.Path]::GetTempPath()) ("cc-switch-install-" + [Guid]::NewGuid().ToString('N'))
+    $zipPath = Join-Path $tempPath $asset
+    $extractPath = Join-Path $tempPath 'extract'
+    $stagedPath = $null
+    New-Item -ItemType Directory -Path $tempPath -Force | Out-Null
+
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
+        $actualSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualSha256 -ne $CcSwitchWindowsX64Sha256) {
+            throw "cc-switch archive checksum mismatch. expected=$CcSwitchWindowsX64Sha256 actual=$actualSha256"
+        }
+
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
+        $sourcePath = Join-Path $extractPath 'cc-switch.exe'
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw 'cc-switch.exe not found in verified archive'
+        }
+
+        if (-not (Test-Path -LiteralPath $binPath)) {
+            New-Item -ItemType Directory -Path $binPath -Force | Out-Null
+        }
+
+        $targetPath = Join-Path $binPath 'cc-switch.exe'
+        $stagedPath = "$targetPath.new.$PID"
+        Copy-Item -LiteralPath $sourcePath -Destination $stagedPath -Force
+        Move-Item -LiteralPath $stagedPath -Destination $targetPath -Force
+    } finally {
+        if ($stagedPath) {
+            Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $tempPath -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Copy-Item (Join-Path $extractPath 'cc-switch.exe') -Destination $binPath -Force
 
     $env:PATH = "$binPath;$env:PATH"
 }
@@ -219,6 +247,11 @@ function Ensure-Npx {
     $Command = Get-Command npx -ErrorAction SilentlyContinue
     if ($Command) {
         Write-Host 'npx: found'
+        return
+    }
+
+    if ($DryRun) {
+        Write-Host 'dry-run: npx is not installed; commands will still be printed'
         return
     }
 
@@ -304,18 +337,30 @@ foreach ($SkillName in $RequestedSkills) {
 }
 
 Write-Host ''
-Invoke-Step -Command @('cc-switch', 'skills', 'sync', '--app', $App)
+$FinalFailures = @()
+try {
+    Invoke-Step -Command @('cc-switch', 'skills', 'sync', '--app', $App)
+} catch {
+    $FinalFailures += 'cc-switch skills sync'
+}
 
 Write-Host ''
 Write-Host 'current skills:'
-Invoke-Step -Command @('cc-switch', 'skills', 'list')
+try {
+    Invoke-Step -Command @('cc-switch', 'skills', 'list')
+} catch {
+    $FinalFailures += 'cc-switch skills list'
+}
 
-if ($FailedRepos.Count -gt 0 -or $FailedSkills.Count -gt 0) {
+if ($FailedRepos.Count -gt 0 -or $FailedSkills.Count -gt 0 -or $FinalFailures.Count -gt 0) {
     if ($FailedRepos.Count -gt 0) {
-        Write-Error "failed repos: $($FailedRepos -join ' ')"
+        Write-Warning "failed repos: $($FailedRepos -join ' ')"
     }
     if ($FailedSkills.Count -gt 0) {
-        Write-Error "failed skills: $($FailedSkills -join ' ')"
+        Write-Warning "failed skills: $($FailedSkills -join ' ')"
+    }
+    if ($FinalFailures.Count -gt 0) {
+        Write-Warning "failed final steps: $($FinalFailures -join '; ')"
     }
     throw 'check network/proxy and enabled skill repositories, then rerun this script'
 }

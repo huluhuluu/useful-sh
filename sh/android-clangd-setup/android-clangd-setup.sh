@@ -120,7 +120,7 @@ detect_ndk_root() {
   for sdk_var in ANDROID_SDK_ROOT ANDROID_HOME; do
     eval "sdk_root=\${$sdk_var-}"
     if [ -n "${sdk_root}" ] && [ -d "$sdk_root/ndk" ]; then
-      candidate="$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+      candidate="$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
       if [ -n "${candidate}" ] && [ -d "$candidate" ]; then
         printf '%s\n' "$candidate"
         return 0

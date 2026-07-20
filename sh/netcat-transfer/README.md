@@ -202,8 +202,8 @@ nothing was extracted; rerun recv with --decompress gzip or --decompress auto
 
 脚本会计算所有发送路径的共同父目录，并以它为 tar 根目录：
 
-- `$HOME/a.pkl` 和 `$HOME/b.pkl` 会在接收目录中生成 `a.pkl`、`b.pkl`
-- `$HOME/a/x.pkl` 和 `$HOME/b/y.pkl` 会保留为 `a/x.pkl`、`b/y.pkl`
+- `/data/a.pkl` 和 `/data/b.pkl` 会在接收目录中生成 `a.pkl`、`b.pkl`
+- `/data/a/x.pkl` 和 `/data/b/y.pkl` 会保留为 `a/x.pkl`、`b/y.pkl`
 - 只发送单个文件或目录时，行为和旧版本一致
 
 这样不会把绝对路径直接写入 tar，也避免所有文件都落到 `root/...` 前缀下。
@@ -228,7 +228,7 @@ send(raw): 8.00GiB 0:01:12 [113MiB/s] [=======>] 80% ETA 0:00:18
 
 - 接收目录需要当前用户具有写入和进入权限，即目录权限中的 `w+x`
 - 传输流没有加密或身份认证，只适合可信局域网或受保护隧道
-- 接收端会直接解包发送方提供的 tar 流，只应接收可信发送方的数据
+- 接收端先把发送方提供的 tar 流解包到临时 staging，完整成功后才合并到目标目录；仍然只应接收可信发送方的数据
 - 发送端的 `auto` 优先使用 `zstd`，没有时回退到 `gzip`
 - 接收端默认不解压；使用 `--decompress auto` 时会读取协议头并选择对应工具
 - 新协议头与旧脚本的数据流格式不兼容，发送和接收两端应同时更新

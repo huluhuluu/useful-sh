@@ -4,10 +4,10 @@
 
 ## 依赖检查
 
-Linux / Git Bash 入口需要 `npx`，自动安装 `cc-switch` 时还需要 `curl` 和 `bash`：
+Linux / Git Bash 入口需要 `npx`，自动安装 `cc-switch` 时还需要 `curl`、`sha256sum` 和 `tar`：
 
 ```bash
-for cmd in bash curl npx; do
+for cmd in curl sha256sum tar npx; do
   command -v "$cmd" >/dev/null || echo "missing: $cmd"
 done
 command -v cc-switch >/dev/null || echo "cc-switch will be installed automatically"
@@ -16,7 +16,7 @@ command -v cc-switch >/dev/null || echo "cc-switch will be installed automatical
 Ubuntu / Debian 可安装基础依赖：
 
 ```bash
-sudo apt install bash curl npm
+sudo apt install curl coreutils tar npm
 ```
 
 macOS 上的 Node.js / `npx` 可使用 `brew install node`安装，但当前 `.sh` 中的 `cc-switch` 自动安装器不支持 macOS。缺少依赖时，脚本会在退出前打印对应安装命令或 `cc-switch` 自动安装提示。
@@ -98,10 +98,10 @@ cc-switch skills list
 
 脚本会先检测本机是否有 `cc-switch`。
 
-Linux 下如果没有 `cc-switch`，脚本会执行：
+Linux 下如果没有 `cc-switch`，脚本会按 CPU 架构下载固定的 `v5.9.2` release 归档，校验脚本内置的 SHA-256 后，将单个可执行文件安装到 `~/.local/bin/cc-switch`。校验失败时不会安装。
 
 ```bash
-curl -fsSL https://github.com/SaladDay/cc-switch-cli/releases/latest/download/install.sh | bash
+cc-switch --version
 ```
 
 如果 GitHub 无法直连，需要先手动开启代理，再运行脚本，例如：
@@ -111,18 +111,11 @@ export HTTPS_PROXY=http://127.0.0.1:7890
 export HTTP_PROXY=http://127.0.0.1:7890
 ```
 
-Windows 原生 PowerShell 会通过 `codex-skills-bootstrap.ps1` 自动安装 `cc-switch.exe`。也可以手动安装：
+Windows 原生 PowerShell 使用同一固定版本和内置 SHA-256，下载到唯一临时目录，校验后再安装 `cc-switch.exe`：
 
 ```powershell
-$downloadUrl = "https://github.com/SaladDay/cc-switch-cli/releases/latest/download/cc-switch-cli-windows-x64.zip"
-$zipPath = "$env:TEMP\cc-switch-cli.zip"
-$extractPath = "$env:TEMP\cc-switch-extract"
-Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
-Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-$binPath = "$env:LOCALAPPDATA\Microsoft\WindowsApps"
-if (!(Test-Path $binPath)) { New-Item -ItemType Directory -Path $binPath -Force }
-Copy-Item "$extractPath\cc-switch.exe" -Destination $binPath -Force
-cc-switch --version
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\sh\codex-skills-bootstrap\codex-skills-bootstrap.ps1
 ```
 
 PowerShell 访问 GitHub 失败时，先设置代理：
@@ -140,8 +133,8 @@ $env:HTTP_PROXY = "http://127.0.0.1:7890"
 2. 检查 `cc-switch` 是否可用。
 3. 检查 `npx` 是否可用。
 4. 缺少 `cc-switch` 时按环境处理：
-   - Linux：执行 `curl -fsSL .../install.sh | bash`
-   - Windows PowerShell：下载 release zip 并复制 `cc-switch.exe`
+   - Linux：下载固定版本归档，校验 SHA-256 后安装到 `~/.local/bin`
+   - Windows PowerShell：下载固定版本 ZIP，校验 SHA-256 后复制 `cc-switch.exe`
    - Windows shell：提示改用 PowerShell 入口
 5. 可选添加或启用额外 skill repo。
 6. 对每个 skill 执行 `npx skills add <source> --global --copy --agent <app> --skill <skill> -y`。
