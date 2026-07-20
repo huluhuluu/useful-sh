@@ -22,7 +22,8 @@ Common options:
   --port PORT          Transfer port. It must match on both sides
   --compression MODE   Backward-compatible alias for --compress (send) or
                        --decompress (recv)
-  --progress           Show pv transfer progress (default)
+  --progress MODE      Progress display: auto, on, off (default: auto)
+                       MODE is optional; bare --progress uses auto
   --no-progress        Disable pv transfer progress
   -h, --help           Show this help
 
@@ -82,6 +83,7 @@ SEND_COMPRESSION="auto"
 RECV_DECOMPRESSION="none"
 CONNECT_TIMEOUT=5
 TEST_LISTEN=0
+PROGRESS_MODE="auto"
 SHOW_PROGRESS=1
 PV_AVAILABLE=0
 SOURCE_PATHS=()
@@ -429,14 +431,28 @@ while (( $# > 0 )); do
         echo "--progress is not valid in test mode" >&2
         exit 1
       }
-      SHOW_PROGRESS=1
-      shift
+      if (( $# >= 2 )) && [[ "$2" != -* ]]; then
+        case "$2" in
+          auto|on|off)
+            PROGRESS_MODE="$2"
+            ;;
+          *)
+            echo "unsupported progress mode: $2" >&2
+            exit 1
+            ;;
+        esac
+        shift 2
+      else
+        PROGRESS_MODE="auto"
+        shift
+      fi
       ;;
     --no-progress)
       [[ "$MODE" != "test" ]] || {
         echo "--no-progress is not valid in test mode" >&2
         exit 1
       }
+      PROGRESS_MODE="off"
       SHOW_PROGRESS=0
       shift
       ;;
@@ -465,14 +481,25 @@ done
 require_command tar
 require_command nc
 
-if (( SHOW_PROGRESS == 1 )) && [[ "$MODE" != "test" ]]; then
-  if command -v pv >/dev/null 2>&1; then
-    PV_AVAILABLE=1
-  else
-    echo "warning: pv is not installed; continuing without progress output" >&2
-    print_install_hint pv
-    SHOW_PROGRESS=0
-  fi
+if [[ "$MODE" != "test" ]]; then
+  case "$PROGRESS_MODE" in
+    auto)
+      if command -v pv >/dev/null 2>&1; then
+        PV_AVAILABLE=1
+      else
+        echo "warning: pv is not installed; continuing without progress output" >&2
+        print_install_hint pv
+        SHOW_PROGRESS=0
+      fi
+      ;;
+    on)
+      require_command pv
+      PV_AVAILABLE=1
+      ;;
+    off)
+      SHOW_PROGRESS=0
+      ;;
+  esac
 fi
 
 [[ -n "$PORT" ]] || {

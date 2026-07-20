@@ -40,7 +40,7 @@ Ubuntu / Debian 可安装：
 sudo apt install netcat-openbsd pv zstd gzip tar findutils gawk
 ```
 
-必需命令缺失时，脚本会在退出前打印对应的 `apt install` 命令。缺少可选的 `pv` 时会打印安装命令，然后在不显示进度的情况下继续传输。
+必需命令缺失时，脚本会在退出前打印对应的 `apt install` 命令。进度模式为 `auto` 且缺少可选的 `pv` 时，会打印安装命令，然后在不显示进度的情况下继续传输；使用 `--progress on` 时缺少 `pv` 会报错退出。
 
 ## 2. 🔧 参数说明
 
@@ -50,7 +50,7 @@ sudo apt install netcat-openbsd pv zstd gzip tar findutils gawk
 | --- | --- | --- |
 | `--port PORT` | 传输端口，两端必须一致 | - |
 | `--compression MODE` | 兼容旧用法；在 `send` 中等同 `--compress`，在 `recv` 中等同 `--decompress` | 取决于模式 |
-| `--progress` | 使用 `pv` 显示传输进度 | 开启 |
+| `--progress [MODE]` | 进度模式：`auto`、`on`、`off`；省略 `MODE` 等同 `auto` | `auto` |
 | `--no-progress` | 关闭传输进度 | - |
 | `-h, --help` | 显示帮助信息并退出 | - |
 
@@ -210,7 +210,7 @@ nothing was extracted; rerun recv with --decompress gzip or --decompress auto
 
 ## 5. 📊 传输进度
 
-默认启用 `pv` 显示进度。发送端显示压缩前的 tar 原始流，接收端显示解压后的 tar 原始流，因此两端使用同一个原始数据总量作为进度基准。
+默认使用 `auto` 模式：存在 `pv` 时显示进度，否则提示后继续传输。发送端显示压缩前的 tar 原始流，接收端显示解压后的 tar 原始流，因此两端使用同一个原始数据总量作为进度基准。
 
 ```text
 send(raw): 8.00GiB 0:01:12 [113MiB/s] [=======>] 80% ETA 0:00:18
@@ -220,8 +220,9 @@ send(raw): 8.00GiB 0:01:12 [113MiB/s] [=======>] 80% ETA 0:00:18
 - 发送端的 `raw tar size` 使用十进制 GB，`1 GB = 1,000,000,000 bytes`
 - 超长路径等情况可能增加额外 tar 元数据，最终百分比可能略高或略低于 `100%`
 - 进度中的速度是未压缩数据速度，不是网口上的压缩流量速度
-- 没有安装 `pv` 时脚本会输出警告，然后在不显示进度的情况下继续传输
-- 可使用 `--no-progress` 显式关闭，例如在无交互的后台任务中
+- `--progress on` 强制启用进度，缺少 `pv` 时会报错退出
+- `--progress off` 或 `--no-progress` 显式关闭进度，例如在无交互的后台任务中
+- 裸 `--progress` 与 `--progress auto` 等价；缺少 `pv` 时会输出警告，然后继续传输
 
 ## 6. ⚠️ 注意
 
