@@ -12,6 +12,7 @@
 | 脚本 | 说明 | 文档 |
 | --- | --- | --- |
 | [`adb-relay-guard.sh`](./sh/adb-relay-guard/adb-relay-guard.sh) | 守护 USB ADB、`adb forward` 和到远端 SSH 主机的反向端口转发 | [README](./sh/adb-relay-guard/README.md) |
+| [`adb-server-relay.sh`](./sh/adb-server-relay/adb-server-relay.sh) | 通过 SSH 反向转发 ADB server，优化跨网络 `adb push` | [README](./sh/adb-server-relay/README.md) |
 | [`android-clangd-setup.sh`](./sh/android-clangd-setup/android-clangd-setup.sh) | 自动探测 Android NDK，并给目标项目补齐 VS Code `clangd` 和 `.clangd` 配置 | [README](./sh/android-clangd-setup/README.md) |
 | [`codex-zsh-history-isolation.sh`](./sh/codex-zsh-history-isolation/codex-zsh-history-isolation.sh) | 隔离 Codex 使用时的 `zsh` 历史，并控制 Codex 的 `history.jsonl` 保留模式 | [README](./sh/codex-zsh-history-isolation/README.md) |
 | [`codex-skills-bootstrap`](./sh/codex-skills-bootstrap/) | 通过 `cc-switch` 给 Codex 或其它 agent 批量安装常用 skills | [README](./sh/codex-skills-bootstrap/README.md) |
@@ -31,6 +32,7 @@ Linux / Git Bash：
 
 ```bash
 ./sh/adb-relay-guard/adb-relay-guard.sh --help
+./sh/adb-server-relay/adb-server-relay.sh --help
 ./sh/android-clangd-setup/android-clangd-setup.sh --help
 ./sh/codex-skills-bootstrap/codex-skills-bootstrap.sh --help
 ./sh/codex-zsh-history-isolation/codex-zsh-history-isolation.sh --help

@@ -3,3 +3,4 @@ findings.md
 progress.md
 task_plan.md
 .codegraph
+sh/adb-server-relay/*.log
