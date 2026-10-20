@@ -17,7 +17,8 @@ Usage:
 
 Read-only Docker disk usage audit. Groups writable-layer and persistent
 bind/volume data by container, using container-internal paths. Shared sources
-are scanned once and their results reused. Run on the Docker daemon host.
+are detected from mount sources, scanned once, and shown with short references.
+Run on the Docker daemon host.
 No data is modified or removed.
 
 Options:
@@ -364,8 +365,11 @@ scanned_mounts=0
 failed_mounts=0
 declare -A container_mounts=() container_mount_notes=()
 declare -A mount_sources=() mount_devices=() mount_aliases=()
-declare -A mount_scan_roots=() mount_scan_depths=() mount_cache=() mount_failed=()
+declare -A mount_containers=() mount_container_counts=() mount_shared_ids=()
+declare -A mount_detail_container=() mount_detail_destination=() mount_detail_depth=() mount_overlaps=()
+declare -A mount_cache=() mount_failed=() mount_sizes=()
 declare -a scan_roots=()
+shared_sources=0
 if ! run_privileged docker inspect \
   --format '{{range .Mounts}}{{if or (eq .Type "bind") (eq .Type "volume")}}{{printf "%s\x1f%s\x1f%s\x1f%s\n" .Type .Source .Destination $.Name}}{{end}}{{end}}' \
   "${container_ids[@]}" > "$mounts_file"; then
@@ -394,43 +398,48 @@ else
     # A shared source can appear at different depths in different containers.
     separators="${destination%/}"
     separators="${separators//[^\/]/}"
-    source_depth=$((MAX_DEPTH - ${#separators}))
+    destination_depth=${#separators}
+    source_depth=$((MAX_DEPTH - destination_depth))
     (( source_depth >= 0 )) || source_depth=0
     if [[ -z "${mount_sources["$canonical_source"]+present}" ]] ||
       (( source_depth > ${mount_sources["$canonical_source"]} )); then
       mount_sources["$canonical_source"]="$source_depth"
     fi
+    if [[ -z "${mount_detail_depth["$canonical_source"]+present}" ]] ||
+      (( destination_depth < ${mount_detail_depth["$canonical_source"]} )); then
+      mount_detail_depth["$canonical_source"]="$destination_depth"
+      mount_detail_container["$canonical_source"]="$name"
+      mount_detail_destination["$canonical_source"]="$destination"
+    fi
+    # Count different containers, regardless of mount destination names or aliases.
+    container_key="$source_identity"$'\x1f'"$name"
+    if [[ -z "${mount_containers["$container_key"]+present}" ]]; then
+      mount_containers["$container_key"]=1
+      mount_container_counts["$canonical_source"]=$((${mount_container_counts["$canonical_source"]:-0} + 1))
+    fi
     mount_devices["$canonical_source"]="${source_identity%%:*}"
     container_mounts["$name"]+="$mount_type"$'\x1f'"$canonical_source"$'\x1f'"$destination"$'\n'
   done < "$mounts_file"
 
-  # Scan overlapping sources once; retain enough depth for every mounted subtree.
+  # Only identical sources share a scan. Containment is an overlap, not identity.
   if (( ${#mount_sources[@]} > 0 )); then
     if ! printf '%s\n' "${!mount_sources[@]}" | LC_ALL=C sort > "$TMPDIR_PATH/mount-sources"; then
       echo "Failed to sort persistent mount sources." >&2
       exit 1
     fi
     while IFS= read -r source; do
-      mount_scan_roots["$source"]="$source"
-      for scan_root in "${scan_roots[@]}"; do
-        if [[ "$source" == "${scan_root%/}/"* &&
-          "${mount_devices["$source"]}" == "${mount_devices["$scan_root"]}" ]]; then
-          mount_scan_roots["$source"]="$scan_root"
-          break
+      if (( ${mount_container_counts["$source"]} > 1 )); then
+        shared_sources=$((shared_sources + 1))
+        mount_shared_ids["$source"]="$shared_sources"
+      fi
+      for other_source in "${scan_roots[@]}"; do
+        if [[ "$source" == "${other_source%/}/"* &&
+          "${mount_devices["$source"]}" == "${mount_devices["$other_source"]}" ]]; then
+          mount_overlaps["$source"]=1
+          mount_overlaps["$other_source"]=1
         fi
       done
-      scan_root="${mount_scan_roots["$source"]}"
-      if [[ "$scan_root" == "$source" ]]; then
-        scan_roots+=("$source")
-        mount_scan_depths["$source"]="${mount_sources["$source"]}"
-      else
-        relative_path="${source#"${scan_root%/}"}"
-        separators="${relative_path//[^\/]/}"
-        required_depth=$((${mount_sources["$source"]} + ${#separators}))
-        if (( required_depth > ${mount_scan_depths["$scan_root"]} )); then
-          mount_scan_depths["$scan_root"]="$required_depth"
-        fi
-      fi
+      scan_roots+=("$source")
     done < "$TMPDIR_PATH/mount-sources"
   fi
 fi
@@ -462,22 +471,49 @@ while IFS='|' read -r size_rw name upper_dir; do
   fi
   while IFS=$'\x1f' read -r mount_type source destination; do
     [[ -n "$mount_type" ]] || continue
-    printf '\n  Persistent mount: %s [%s]\n' "$destination" "$mount_type"
-    scan_root="${mount_scan_roots["$source"]}"
-    if [[ -z "${mount_cache["$scan_root"]+present}" ]]; then
+    shared_id="${mount_shared_ids["$source"]:-}"
+    if [[ -n "$shared_id" ]]; then
+      printf '\n  Persistent mount: %s [%s, shared #%s]\n' "$destination" "$mount_type" "$shared_id"
+    else
+      printf '\n  Persistent mount: %s [%s]\n' "$destination" "$mount_type"
+    fi
+    if [[ -n "${mount_overlaps["$source"]+present}" ]]; then
+      echo "    Overlapping source ranges; sizes are not additive."
+    fi
+    if [[ -z "${mount_cache["$source"]+present}" ]]; then
       scan_index=$((scan_index + 1))
-      mount_cache["$scan_root"]="$TMPDIR_PATH/scan.$scan_index"
-      if collect_path "$scan_root" "${mount_cache["$scan_root"]}" "${mount_scan_depths["$scan_root"]}"; then
+      mount_cache["$source"]="$TMPDIR_PATH/scan.$scan_index"
+      if collect_path "$source" "${mount_cache["$source"]}" "${mount_sources["$source"]}"; then
         scanned_mounts=$((scanned_mounts + 1))
       else
-        mount_failed["$scan_root"]=1
+        mount_failed["$source"]=1
         failed_mounts=$((failed_mounts + 1))
       fi
+      # Keep a size even below the display threshold; a missing result stays unknown.
+      mount_sizes["$source"]=""
+      while read -r bytes path; do
+        if [[ "$path" == "$source" && "$bytes" =~ ^[0-9]+$ ]]; then
+          mount_sizes["$source"]="$bytes"
+          break
+        fi
+      done < "${mount_cache["$source"]}.du.raw"
     fi
-    if [[ -n "${mount_failed["$scan_root"]+present}" ]]; then
+    if [[ -n "${mount_failed["$source"]+present}" ]]; then
       echo "    Persistent scan incomplete; available results may undercount usage."
     fi
-    print_path "$source" "$destination" "${mount_cache["$scan_root"]}" mount
+    if [[ -n "$shared_id" &&
+      ( "$name" != "${mount_detail_container["$source"]}" ||
+        "$destination" != "${mount_detail_destination["$source"]}" ) ]]; then
+      if [[ -n "${mount_sizes["$source"]}" ]]; then
+        printf '      %8s  %s\n' "$(human_size "${mount_sizes["$source"]}")" "$destination"
+      else
+        echo "    Source size unavailable."
+      fi
+      printf '    Details: shared #%s at %s:%s\n' "$shared_id" \
+        "${mount_detail_container["$source"]}" "${mount_detail_destination["$source"]}"
+    else
+      print_path "$source" "$destination" "${mount_cache["$source"]}" mount
+    fi
   done <<< "${container_mounts["$name"]:-}"
 done < "$inspect_file"
 
@@ -492,6 +528,7 @@ printf 'Scanned containers: %d/%d\n' "$scanned_containers" "${#container_ids[@]}
 printf 'Failed containers:  %d\n' "$failed_containers"
 printf 'Scanned persistent sources: %d/%d\n' "$scanned_mounts" "${#scan_roots[@]}"
 printf 'Persistent mount failures:  %d\n' "$failed_mounts"
+printf 'Shared persistent sources:  %d\n' "$shared_sources"
 
 section "Commands for manual inspection"
 echo "Container directories over 1 GiB, depth 4:"
