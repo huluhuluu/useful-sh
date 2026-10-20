@@ -22,7 +22,7 @@ No data is modified or removed.
 
 Options:
   -s, --min-size GIB   Minimum directory/file size in GiB (default: 5)
-  -d, --depth LEVEL    Maximum directory display depth (default: 4)
+  -d, --depth LEVEL    Directory depth from container / (default: 4)
       --all-files      Show files even when a listed directory contains them
   -h, --help           Show this help message and exit
 
@@ -144,26 +144,47 @@ run_privileged() {
   fi
 }
 
+report_scan_error() {
+  local stage="$1" scan_root="$2" error_file="$3" message count=0
+  printf '    %s failed for %s; keeping available results.\n' "$stage" "$scan_root" >&2
+  while IFS= read -r message; do
+    if (( count == 5 )); then
+      echo "      Additional errors omitted." >&2
+      break
+    fi
+    printf '      %s\n' "$message" >&2
+    count=$((count + 1))
+  done < "$error_file"
+}
+
 collect_path() {
-  local scan_root="$1" cache_prefix="$2" scan_depth="$3"
-  if ! run_privileged du -x -B1 --max-depth="$scan_depth" "$scan_root" > "$cache_prefix.du.raw" 2>/dev/null; then
-    echo "  Failed to scan directories for $scan_root." >&2
-    return 1
+  local scan_root="$1" cache_prefix="$2" scan_depth="$3" failed=0
+  if ! run_privileged du -x -B1 --max-depth="$scan_depth" "$scan_root" \
+    > "$cache_prefix.du.raw" 2> "$cache_prefix.du.err"; then
+    : > "$cache_prefix.directories.incomplete"
+    report_scan_error du "$scan_root" "$cache_prefix.du.err"
+    failed=1
   fi
-  if ! sort -nr "$cache_prefix.du.raw" |
-    awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' > "$cache_prefix.directories"; then
-    echo "  Failed to process directory sizes for $scan_root." >&2
-    return 1
+  if ! { sort -nr "$cache_prefix.du.raw" |
+    awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' > "$cache_prefix.directories"; } \
+    2> "$cache_prefix.directories.err"; then
+    : > "$cache_prefix.directories.incomplete"
+    report_scan_error "Directory processing" "$scan_root" "$cache_prefix.directories.err"
+    failed=1
   fi
-  if ! run_privileged find "$scan_root" -xdev -type f -printf '%s\t%p\n' > "$cache_prefix.find.raw" 2>/dev/null; then
-    echo "  Failed to scan files for $scan_root." >&2
-    return 1
+  if ! run_privileged find "$scan_root" -xdev -type f -printf '%s\t%p\n' \
+    > "$cache_prefix.find.raw" 2> "$cache_prefix.find.err"; then
+    : > "$cache_prefix.files.incomplete"
+    report_scan_error find "$scan_root" "$cache_prefix.find.err"
+    failed=1
   fi
-  if ! awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' "$cache_prefix.find.raw" |
-    sort -nr > "$cache_prefix.files"; then
-    echo "  Failed to process file sizes for $scan_root." >&2
-    return 1
+  if ! { awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' "$cache_prefix.find.raw" |
+    sort -nr > "$cache_prefix.files"; } 2> "$cache_prefix.files.err"; then
+    : > "$cache_prefix.files.incomplete"
+    report_scan_error "File processing" "$scan_root" "$cache_prefix.files.err"
+    failed=1
   fi
+  return "$failed"
 }
 
 print_path() {
@@ -181,17 +202,22 @@ print_path() {
     else
       continue
     fi
-    separators="${relative_path//[^\/]/}"
-    (( ${#separators} <= MAX_DEPTH )) || continue
     display_path="${destination%/}$relative_path"
     [[ -n "$display_path" ]] || display_path="/"
+    separators="${display_path%/}"
+    separators="${separators//[^\/]/}"
+    (( ${#separators} <= MAX_DEPTH )) || continue
     matched_directory_paths["${relative_path:-/}"]=1
     printf '      %8s  %s\n' "$(human_size "$bytes")" "$display_path"
     matched_directories=$((matched_directories + 1))
   done < "$cache_prefix.directories"
 
   if (( matched_directories == 0 )); then
-    printf '    No directories at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
+    if [[ -f "$cache_prefix.directories.incomplete" ]]; then
+      echo "    No matching directories in available results (scan incomplete)."
+    else
+      printf '    No directories at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
+    fi
   else
     printf '    Matched directories: %d\n' "$matched_directories"
   fi
@@ -230,7 +256,11 @@ print_path() {
   done < "$cache_prefix.files"
 
   if (( standalone_files == 0 )); then
-    printf '    No standalone files at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
+    if [[ -f "$cache_prefix.files.incomplete" ]]; then
+      echo "    No matching standalone files in available results (scan incomplete)."
+    else
+      printf '    No standalone files at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
+    fi
   else
     printf '    Matched standalone files: %d\n' "$standalone_files"
   fi
@@ -361,7 +391,15 @@ else
     else
       mount_aliases["$source_identity"]="$canonical_source"
     fi
-    mount_sources["$canonical_source"]=1
+    # A shared source can appear at different depths in different containers.
+    separators="${destination%/}"
+    separators="${separators//[^\/]/}"
+    source_depth=$((MAX_DEPTH - ${#separators}))
+    (( source_depth >= 0 )) || source_depth=0
+    if [[ -z "${mount_sources["$canonical_source"]+present}" ]] ||
+      (( source_depth > ${mount_sources["$canonical_source"]} )); then
+      mount_sources["$canonical_source"]="$source_depth"
+    fi
     mount_devices["$canonical_source"]="${source_identity%%:*}"
     container_mounts["$name"]+="$mount_type"$'\x1f'"$canonical_source"$'\x1f'"$destination"$'\n'
   done < "$mounts_file"
@@ -384,11 +422,11 @@ else
       scan_root="${mount_scan_roots["$source"]}"
       if [[ "$scan_root" == "$source" ]]; then
         scan_roots+=("$source")
-        mount_scan_depths["$source"]="$MAX_DEPTH"
+        mount_scan_depths["$source"]="${mount_sources["$source"]}"
       else
         relative_path="${source#"${scan_root%/}"}"
         separators="${relative_path//[^\/]/}"
-        required_depth=$((MAX_DEPTH + ${#separators}))
+        required_depth=$((${mount_sources["$source"]} + ${#separators}))
         if (( required_depth > ${mount_scan_depths["$scan_root"]} )); then
           mount_scan_depths["$scan_root"]="$required_depth"
         fi
@@ -411,11 +449,12 @@ while IFS='|' read -r size_rw name upper_dir; do
     scan_index=$((scan_index + 1))
     cache_prefix="$TMPDIR_PATH/scan.$scan_index"
     if collect_path "$upper_dir" "$cache_prefix" "$MAX_DEPTH"; then
-      print_path "$upper_dir" / "$cache_prefix" container
       scanned_containers=$((scanned_containers + 1))
     else
+      echo "    Writable scan incomplete; available results may undercount usage."
       failed_containers=$((failed_containers + 1))
     fi
+    print_path "$upper_dir" / "$cache_prefix" container
   fi
 
   if [[ -n "${container_mount_notes["$name"]:-}" ]]; then
@@ -436,10 +475,9 @@ while IFS='|' read -r size_rw name upper_dir; do
       fi
     fi
     if [[ -n "${mount_failed["$scan_root"]+present}" ]]; then
-      echo "    Persistent source scan failed."
-    else
-      print_path "$source" "$destination" "${mount_cache["$scan_root"]}" mount
+      echo "    Persistent scan incomplete; available results may undercount usage."
     fi
+    print_path "$source" "$destination" "${mount_cache["$scan_root"]}" mount
   done <<< "${container_mounts["$name"]:-}"
 done < "$inspect_file"
 
