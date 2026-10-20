@@ -15,9 +15,9 @@ usage() {
 Usage:
   ./docker-disk-scan.sh [options] [container]
 
-Read-only Docker disk usage audit. Lists large writable-layer directories and
-files using container-internal paths, plus persistent bind/volume data in a
-separate, deduplicated section using host paths. Run on the Docker daemon host.
+Read-only Docker disk usage audit. Groups writable-layer and persistent
+bind/volume data by container, using container-internal paths. Shared sources
+are scanned once and their results reused. Run on the Docker daemon host.
 No data is modified or removed.
 
 Options:
@@ -144,66 +144,73 @@ run_privileged() {
   fi
 }
 
-scan_path() {
-  local scan_root="$1" path_mode="$2"
-  local matched_directories du_raw directories_file bytes path relative_path display_path
-  local standalone_files collapsed_files find_raw files_file ancestor collapsed
-  scan_index=$((scan_index + 1))
-  echo "  Large directories:"
-  local -A matched_directory_paths=()
-  matched_directories=0
-  du_raw="$TMPDIR_PATH/du.$scan_index.raw"
-  directories_file="$TMPDIR_PATH/du.$scan_index.filtered"
-  if ! run_privileged du -x -B1 --max-depth="$MAX_DEPTH" "$scan_root" > "$du_raw" 2>/dev/null; then
+collect_path() {
+  local scan_root="$1" cache_prefix="$2" scan_depth="$3"
+  if ! run_privileged du -x -B1 --max-depth="$scan_depth" "$scan_root" > "$cache_prefix.du.raw" 2>/dev/null; then
     echo "  Failed to scan directories for $scan_root." >&2
     return 1
   fi
-  if ! sort -nr "$du_raw" |
-    awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' > "$directories_file"; then
+  if ! sort -nr "$cache_prefix.du.raw" |
+    awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' > "$cache_prefix.directories"; then
     echo "  Failed to process directory sizes for $scan_root." >&2
     return 1
   fi
-  while read -r bytes path; do
-    [[ -n "$bytes" ]] || continue
-    relative_path="${path#"$scan_root"}"
-    [[ -n "$relative_path" ]] || relative_path="/"
-    matched_directory_paths["$relative_path"]=1
-    display_path="$relative_path"
-    [[ "$path_mode" != "host" ]] || display_path="$path"
-    printf '    %8s  %s\n' "$(human_size "$bytes")" "$display_path"
-    matched_directories=$((matched_directories + 1))
-  done < "$directories_file"
-
-  if (( matched_directories == 0 )); then
-    printf '  No directories at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
-  else
-    printf '  Matched directories: %d\n' "$matched_directories"
-  fi
-
-  echo "  Standalone large files:"
-  standalone_files=0
-  collapsed_files=0
-  find_raw="$TMPDIR_PATH/find.$scan_index.raw"
-  files_file="$TMPDIR_PATH/find.$scan_index.filtered"
-  if ! run_privileged find "$scan_root" -xdev -type f -printf '%s\t%p\n' > "$find_raw" 2>/dev/null; then
+  if ! run_privileged find "$scan_root" -xdev -type f -printf '%s\t%p\n' > "$cache_prefix.find.raw" 2>/dev/null; then
     echo "  Failed to scan files for $scan_root." >&2
     return 1
   fi
-  if ! awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' "$find_raw" |
-    sort -nr > "$files_file"; then
+  if ! awk -v threshold="$DIR_THRESHOLD_BYTES" '$1 >= threshold' "$cache_prefix.find.raw" |
+    sort -nr > "$cache_prefix.files"; then
     echo "  Failed to process file sizes for $scan_root." >&2
     return 1
   fi
+}
+
+print_path() {
+  local source="$1" destination="$2" cache_prefix="$3" path_mode="$4"
+  local bytes path relative_path display_path separators ancestor collapsed
+  local matched_directories=0 standalone_files=0 collapsed_files=0
+  local -A matched_directory_paths=()
+  echo "    Large directories:"
+  while read -r bytes path; do
+    [[ -n "$bytes" ]] || continue
+    if [[ "$path" == "$source" ]]; then
+      relative_path=""
+    elif [[ "$path" == "${source%/}/"* ]]; then
+      relative_path="${path#"${source%/}"}"
+    else
+      continue
+    fi
+    separators="${relative_path//[^\/]/}"
+    (( ${#separators} <= MAX_DEPTH )) || continue
+    display_path="${destination%/}$relative_path"
+    [[ -n "$display_path" ]] || display_path="/"
+    matched_directory_paths["${relative_path:-/}"]=1
+    printf '      %8s  %s\n' "$(human_size "$bytes")" "$display_path"
+    matched_directories=$((matched_directories + 1))
+  done < "$cache_prefix.directories"
+
+  if (( matched_directories == 0 )); then
+    printf '    No directories at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
+  else
+    printf '    Matched directories: %d\n' "$matched_directories"
+  fi
+
+  echo "    Standalone large files:"
   while IFS=$'\t' read -r bytes path; do
     [[ -n "$bytes" ]] || continue
-    relative_path="${path#"$scan_root"}"
-    [[ -n "$relative_path" ]] || relative_path="/"
-
+    if [[ "$path" == "$source" ]]; then
+      relative_path=""
+    elif [[ "$path" == "${source%/}/"* ]]; then
+      relative_path="${path#"${source%/}"}"
+    else
+      continue
+    fi
     if (( SHOW_CONTAINED_FILES == 0 )); then
       ancestor="${relative_path%/*}"
       collapsed=0
       while [[ -n "$ancestor" && "$ancestor" != "/" ]]; do
-        if [[ "$path_mode" != "container" || "$ancestor" != "/root" ]] && \
+        if [[ "$path_mode" != "container" || "$ancestor" != "/root" ]] &&
           [[ -n "${matched_directory_paths["$ancestor"]+present}" ]]; then
           collapsed=1
           break
@@ -211,27 +218,24 @@ scan_path() {
         ancestor="${ancestor%/*}"
         [[ -n "$ancestor" ]] || ancestor="/"
       done
-
       if (( collapsed == 1 )); then
         collapsed_files=$((collapsed_files + 1))
         continue
       fi
     fi
-
-    display_path="$relative_path"
-    [[ "$path_mode" != "host" ]] || display_path="$path"
-    printf '    %8s  %s\n' "$(human_size "$bytes")" "$display_path"
+    display_path="${destination%/}$relative_path"
+    [[ -n "$display_path" ]] || display_path="/"
+    printf '      %8s  %s\n' "$(human_size "$bytes")" "$display_path"
     standalone_files=$((standalone_files + 1))
-  done < "$files_file"
+  done < "$cache_prefix.files"
 
   if (( standalone_files == 0 )); then
-    printf '  No standalone files at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
+    printf '    No standalone files at least %s GiB.\n' "$DIR_THRESHOLD_GIB"
   else
-    printf '  Matched standalone files: %d\n' "$standalone_files"
+    printf '    Matched standalone files: %d\n' "$standalone_files"
   fi
-
   if (( collapsed_files > 0 )); then
-    printf '  Collapsed files covered by directories above: %d\n' "$collapsed_files"
+    printf '    Collapsed files covered by directories above: %d\n' "$collapsed_files"
   fi
   return 0
 }
@@ -310,8 +314,6 @@ if (( ${#container_ids[@]} == 0 )); then
   exit 0
 fi
 
-section "Large writable-layer directories and files"
-
 scanned_containers=0
 failed_containers=0
 inspect_raw="$TMPDIR_PATH/inspect.raw"
@@ -327,30 +329,12 @@ if ! sort -t'|' -k1,1nr "$inspect_raw" > "$inspect_file"; then
   exit 1
 fi
 
-scan_index=0
-while IFS='|' read -r size_rw name upper_dir; do
-  name="${name#/}"
-  if [[ -z "$upper_dir" ]] || ! run_privileged test -d "$upper_dir"; then
-    printf '\n\033[1;33m===== %s | writable layer unavailable =====\033[0m\n' "$name"
-    failed_containers=$((failed_containers + 1))
-    continue
-  fi
-
-  printf '\n\033[1;33m===== %s | writable=%s =====\033[0m\n' \
-    "$name" "$(human_size "$size_rw")"
-
-  if scan_path "$upper_dir" container; then
-    scanned_containers=$((scanned_containers + 1))
-  else
-    failed_containers=$((failed_containers + 1))
-  fi
-done < "$inspect_file"
-
-section "Persistent bind mounts and volumes (shared sources scanned once)"
 mounts_file="$TMPDIR_PATH/mounts"
 scanned_mounts=0
 failed_mounts=0
-declare -A mount_references=() mount_sources=() mount_devices=() mount_aliases=()
+declare -A container_mounts=() container_mount_notes=()
+declare -A mount_sources=() mount_devices=() mount_aliases=()
+declare -A mount_scan_roots=() mount_scan_depths=() mount_cache=() mount_failed=()
 declare -a scan_roots=()
 if ! run_privileged docker inspect \
   --format '{{range .Mounts}}{{if or (eq .Type "bind") (eq .Type "volume")}}{{printf "%s\x1f%s\x1f%s\x1f%s\n" .Type .Source .Destination $.Name}}{{end}}{{end}}' \
@@ -363,12 +347,12 @@ else
     name="${name#/}"
     if [[ -z "$source" ]] || ! canonical_source="$(run_privileged realpath -e -- "$source")" ||
       ! source_identity="$(run_privileged stat -Lc '%d:%i' -- "$canonical_source")"; then
-      printf 'Unavailable mount source: %s (%s:%s)\n' "$source" "$name" "$destination" >&2
+      container_mount_notes["$name"]+="  Persistent mount: $destination [$mount_type] - source unavailable"$'\n'
       failed_mounts=$((failed_mounts + 1))
       continue
     fi
     if ! run_privileged test -d "$canonical_source" && ! run_privileged test -f "$canonical_source"; then
-      printf 'Skipping non-file/directory mount: %s (%s:%s)\n' "$source" "$name" "$destination"
+      container_mount_notes["$name"]+="  Persistent mount: $destination [$mount_type] - skipped (not a file/directory)"$'\n'
       continue
     fi
     # Device + inode also identifies aliases of the same source.
@@ -379,42 +363,85 @@ else
     fi
     mount_sources["$canonical_source"]=1
     mount_devices["$canonical_source"]="${source_identity%%:*}"
-    mount_references["$canonical_source"]+="$name:$destination [$mount_type] <- $source"$'\n'
+    container_mounts["$name"]+="$mount_type"$'\x1f'"$canonical_source"$'\x1f'"$destination"$'\n'
   done < "$mounts_file"
 
-  # Parents precede children. A same-filesystem child is already covered by du/find -x.
+  # Scan overlapping sources once; retain enough depth for every mounted subtree.
   if (( ${#mount_sources[@]} > 0 )); then
-    printf '%s\n' "${!mount_sources[@]}" | LC_ALL=C sort > "$TMPDIR_PATH/mount-sources"
+    if ! printf '%s\n' "${!mount_sources[@]}" | LC_ALL=C sort > "$TMPDIR_PATH/mount-sources"; then
+      echo "Failed to sort persistent mount sources." >&2
+      exit 1
+    fi
     while IFS= read -r source; do
-      covered=0
+      mount_scan_roots["$source"]="$source"
       for scan_root in "${scan_roots[@]}"; do
         if [[ "$source" == "${scan_root%/}/"* &&
           "${mount_devices["$source"]}" == "${mount_devices["$scan_root"]}" ]]; then
-          mount_references["$scan_root"]+="${mount_references["$source"]}"
-          covered=1
+          mount_scan_roots["$source"]="$scan_root"
           break
         fi
       done
-      (( covered == 1 )) || scan_roots+=("$source")
+      scan_root="${mount_scan_roots["$source"]}"
+      if [[ "$scan_root" == "$source" ]]; then
+        scan_roots+=("$source")
+        mount_scan_depths["$source"]="$MAX_DEPTH"
+      else
+        relative_path="${source#"${scan_root%/}"}"
+        separators="${relative_path//[^\/]/}"
+        required_depth=$((MAX_DEPTH + ${#separators}))
+        if (( required_depth > ${mount_scan_depths["$scan_root"]} )); then
+          mount_scan_depths["$scan_root"]="$required_depth"
+        fi
+      fi
     done < "$TMPDIR_PATH/mount-sources"
   fi
-
-  for source in "${scan_roots[@]}"; do
-    printf '\n\033[1;33m===== shared storage | %s =====\033[0m\n' "$source"
-    echo "  Referenced by selected containers (not included in writable totals):"
-    while IFS= read -r reference; do
-      [[ -z "$reference" ]] || printf '    %s\n' "$reference"
-    done <<< "${mount_references["$source"]}"
-    if scan_path "$source" host; then
-      scanned_mounts=$((scanned_mounts + 1))
-    else
-      failed_mounts=$((failed_mounts + 1))
-    fi
-  done
-  if (( ${#scan_roots[@]} == 0 && failed_mounts == 0 )); then
-    echo "No persistent file/directory mounts found."
-  fi
 fi
+
+section "Large writable-layer and persistent-mount directories and files"
+scan_index=0
+while IFS='|' read -r size_rw name upper_dir; do
+  name="${name#/}"
+  printf '\n\033[1;33m===== %s | writable=%s =====\033[0m\n' \
+    "$name" "$(human_size "$size_rw")"
+  echo "  Writable layer:"
+  if [[ -z "$upper_dir" ]] || ! run_privileged test -d "$upper_dir"; then
+    echo "    Writable layer unavailable."
+    failed_containers=$((failed_containers + 1))
+  else
+    scan_index=$((scan_index + 1))
+    cache_prefix="$TMPDIR_PATH/scan.$scan_index"
+    if collect_path "$upper_dir" "$cache_prefix" "$MAX_DEPTH"; then
+      print_path "$upper_dir" / "$cache_prefix" container
+      scanned_containers=$((scanned_containers + 1))
+    else
+      failed_containers=$((failed_containers + 1))
+    fi
+  fi
+
+  if [[ -n "${container_mount_notes["$name"]:-}" ]]; then
+    printf '%s' "${container_mount_notes["$name"]}"
+  fi
+  while IFS=$'\x1f' read -r mount_type source destination; do
+    [[ -n "$mount_type" ]] || continue
+    printf '\n  Persistent mount: %s [%s]\n' "$destination" "$mount_type"
+    scan_root="${mount_scan_roots["$source"]}"
+    if [[ -z "${mount_cache["$scan_root"]+present}" ]]; then
+      scan_index=$((scan_index + 1))
+      mount_cache["$scan_root"]="$TMPDIR_PATH/scan.$scan_index"
+      if collect_path "$scan_root" "${mount_cache["$scan_root"]}" "${mount_scan_depths["$scan_root"]}"; then
+        scanned_mounts=$((scanned_mounts + 1))
+      else
+        mount_failed["$scan_root"]=1
+        failed_mounts=$((failed_mounts + 1))
+      fi
+    fi
+    if [[ -n "${mount_failed["$scan_root"]+present}" ]]; then
+      echo "    Persistent source scan failed."
+    else
+      print_path "$source" "$destination" "${mount_cache["$scan_root"]}" mount
+    fi
+  done <<< "${container_mounts["$name"]:-}"
+done < "$inspect_file"
 
 section "Scan summary"
 accounted_containers=$((scanned_containers + failed_containers))

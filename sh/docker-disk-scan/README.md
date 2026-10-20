@@ -1,6 +1,6 @@
 # docker-disk-scan.sh
 
-使用脚本 [docker-disk-scan.sh](./docker-disk-scan.sh) 只读扫描 Docker 容器 writable layer，以及容器使用的 bind mount / volume 持久化数据。可写层按容器展示内部路径；持久化数据按宿主机来源去重，单独展示宿主机路径，不计入各容器的 writable 大小。
+使用脚本 [docker-disk-scan.sh](./docker-disk-scan.sh) 只读扫描 Docker 容器 writable layer，以及容器使用的 bind mount / volume 持久化数据。可写层和持久化数据放在对应容器下展示，统一使用容器内部路径；共享来源只扫描一次，再为各容器复用结果。
 
 脚本默认折叠已经被大目录覆盖的文件。例如模型目录已经超过阈值时，不再逐个列出其中的 `safetensors` 分片；直接放在容器顶层目录中的大文件仍会单独显示。
 
@@ -41,20 +41,34 @@ sudo ./sh/docker-disk-scan/docker-disk-scan.sh my-container
 
 ## 3. 📊 输出说明
 
-可写层报告中，每个容器包含两部分：
+每个容器的报告按下面的顺序展示：
 
-- `Large directories`：writable layer 中达到阈值的目录，大小包含其子目录和文件
-- `Standalone large files`：达到阈值、且没有被更具体的大目录覆盖的文件
+- `Writable layer`：容器可写层的大目录、大文件
+- `Persistent mount: /workspace [bind]` 等：该容器各个 bind / volume 挂载的大目录、大文件，路径映射为容器内部的 `/workspace/code` 等
+- 每部分均包含 `Large directories` 和 `Standalone large files`，使用同一套阈值、深度和文件折叠选项
 
-独立的持久化数据报告包含：
+不再单独展示 shared storage 区域或冗长的容器引用列表。示例（大小仅作演示）：
 
-- 每个扫描来源的宿主机路径，以及引用它的容器、容器内挂载路径和挂载类型
-- 同样的 `Large directories` 和 `Standalone large files`，使用相同的阈值、深度和文件折叠选项
-- 相同来源只扫描一次（规范化路径并按设备号/inode 去重）；同一文件系统中的父子来源合并到父目录扫描，所有挂载引用仍保留
-- 不同文件系统的子挂载来源保留独立扫描；名字相近但互不包含的目录不会合并
-- 挂载源不可访问或扫描失败会明确报告，并以非零状态退出；socket、设备等非普通文件/目录的挂载会注明跳过
+```text
+===== my-container | writable=66GiB =====
+  Writable layer:
+    Large directories:
+         59GiB  /root
+    ...
+  Persistent mount: /workspace [bind]
+    Large directories:
+        120GiB  /workspace
+         80GiB  /workspace/code
+    ...
+```
 
-例如两个容器分别将同一宿主机目录挂载到 `/workspace` 和 `/data`，报告只展示一次该来源，并列出两个引用；不会分别加到两个容器的 writable 大小里。指定单个容器时，只收集该容器的挂载及引用关系。
+共享来源会规范化路径并按设备号/inode 去重。同一文件系统中的父子来源合并扫描，缓存结果；不同文件系统的子来源保留独立扫描。比如 A 的 `/workspace` 与 B 的 `/data` 指向同一来源，只扫描一次，但分别显示在 A、B 的报告下，并映射为各自的容器路径。子目录挂载只显示自己的子树。
+
+`--depth` 对可写层从容器根目录起算，对持久化数据从各自挂载根目录起算。即使共享父目录合并扫描，也会保留子挂载所需的显示深度，不会因合并而漏掉本应显示的目录。
+
+标题中的 `writable=` 只代表可写层大小，不包含持久化数据。共享结果可能出现在多个容器下，因此不能将不同容器的挂载大小直接相加。`Scanned persistent sources` 统计实际扫描的去重来源数量。
+
+挂载源不可访问或扫描失败会在对应容器下标明，并以非零状态退出；socket、设备等非普通文件/目录的挂载会注明跳过。可写层不可用时仍会展示可访问的持久化挂载。指定单个容器时，只展示该容器及其挂载。
 
 目录统计存在父子包含关系，不能直接把每一行相加。例如 `/data/models` 已经包含其下模型目录的空间。
 
